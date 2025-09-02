@@ -25,12 +25,60 @@ def _parse_week_label_from_filename(name: str) -> str | None:
     return f"{a} / {b}"
 
 def _normalize_weekly_sheet(df: pd.DataFrame) -> pd.DataFrame:
-    mapping = {c.lower().strip().replace(" ", ""): c for c in df.columns}
-    col_sku = next((mapping[k] for k in mapping if k in ("sku","#sku","sku#","sku_number","skunumber")), None)
-    col_units = next((mapping[k] for k in mapping if k in ("units","qty","quantity","unitssold","units_sold")), None)
-    out = pd.DataFrame()
-    if col_sku is None or col_units is None:
+    """
+    Robustly locate columns for SKU and Units.
+    - Stringifies all header names
+    - Accepts synonyms (e.g., "SKU #", "Item Number", "Units sold", "Qty")
+    - If not found, scans the first ~10 rows as potential header rows and retries
+    """
+    import re
+    def _key(x):
+        return re.sub(r'[^a-z0-9]+','', str(x).strip().lower())
+
+    sku_keys = {"sku","skunumber","skuno","skunum","skuid","item","itemnumber","itemno","itemid","upc","productcode"}
+    unit_keys = {"units","unitssold","unitsold","qty","quantity","unitsqty","soldunits"}
+
+    def _build_from(_df: pd.DataFrame) -> pd.DataFrame:
+        # Map normalized header -> original header
+        mapping = { _key(c): c for c in _df.columns }
+        # Find best matches
+        sku_col = next((mapping[k] for k in sku_keys if k in mapping), None)
+        units_col = next((mapping[k] for k in unit_keys if k in mapping), None)
+        if sku_col is None or units_col is None:
+            return pd.DataFrame()
+        out = pd.DataFrame()
+        out["SKU"] = _df[sku_col].astype(str).str.strip()
+        out["Units"] = pd.to_numeric(_df[units_col], errors="coerce").fillna(0.0)
         return out
+
+    # First try with current header
+    out = _build_from(df)
+    if not out.empty:
+        return out
+
+    # Fallback: scan first 10 rows to find a header row
+    try:
+        max_scan = min(10, len(df))
+    except Exception:
+        max_scan = 0
+
+    for i in range(max_scan):
+        header_row = df.iloc[i].tolist()
+        # Skip if the row is mostly NaNs
+        if sum(pd.isna(x) for x in header_row) >= len(header_row) - 1:
+            continue
+        # Create a new dataframe with this row as header
+        try:
+            candidate = df.iloc[i+1:].copy()
+            candidate.columns = [str(x) for x in header_row]
+        except Exception:
+            continue
+        out = _build_from(candidate)
+        if not out.empty:
+            return out
+
+    # Nothing found
+    return pd.DataFrame()
     out["SKU"] = df[col_sku].astype(str).str.strip()
     out["Units"] = pd.to_numeric(df[col_units], errors="coerce").fillna(0.0)
     return out
