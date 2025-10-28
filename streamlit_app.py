@@ -1,8 +1,10 @@
 
+import os
 import io
 import re
 import sys
 from datetime import datetime
+
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -53,7 +55,8 @@ def make_headers(df, header_row_idx):
     return new_df
 
 def guess_week_columns(columns):
-    pat = re.compile(r"\b\d{1,2}-\d{1,2}\s*/\s*\d{1,2}-\d{1,2}\b")  # e.g., '1-1 / 1-3'
+    import re as _re
+    pat = _re.compile(r"\b\d{1,2}-\d{1,2}\s*/\s*\d{1,2}-\d{1,2}\b")  # e.g., '1-1 / 1-3'
     weekish = [c for c in columns if pat.search(str(c))]
     # also include columns that contain 'Unit' or 'Sale' if they accompany weeks
     if weekish:
@@ -64,26 +67,29 @@ def guess_week_columns(columns):
 def coerce_numeric(series):
     return pd.to_numeric(series, errors="coerce")
 
-st.title("📊 8‑Week Sales Explorer")
+st.title("📊 8-Week Sales Explorer")
 
 left, right = st.columns([2, 1])
 
 with left:
-    st.markdown("Upload an Excel file (your provided workbook is preloaded). Choose a sheet, define the header row, tidy the data, and explore KPIs and charts.")
+    st.markdown("Upload an Excel file (your provided workbook is preloaded when running locally). Choose a sheet, define the header row, tidy the data, and explore KPIs and charts.")
 
 with right:
     st.markdown("**Quick Start**")
     st.markdown("1) Pick a sheet → 2) Set header row → 3) Select ID vs Value columns → 4) Melt → 5) Explore.")
 
 uploaded = st.file_uploader("Upload an Excel file", type=["xlsx","xls"])
-default_path = "data/8_weeks_trailing_2025.xlsx"
 
+# Try local default if present (local dev), otherwise require upload (Streamlit Cloud)
+default_path = "data/8_weeks_trailing_2025.xlsx"
 sheets = {}
+
 if uploaded is not None:
     sheets = load_excel(uploaded)
 elif os.path.exists(default_path):
     sheets = load_excel(default_path)
 else:
+    st.info("Upload your Excel file to begin (no local default found).")
     st.stop()
 
 sheet_name = st.selectbox("Sheet", list(sheets.keys()))
