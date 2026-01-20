@@ -312,10 +312,17 @@ retailer = st.selectbox("Retailer", retailers)
 
 # Week selection
 week_rows = weeks_2026()
+if not week_rows:
+    st.error('No weeks generated.'); st.stop()
 week_labels = [w[2] for w in week_rows]
 week_label = st.selectbox("Week", week_labels, index=0)
 
-week_start, week_end = [(a,b,l) for a,b,l in week_rows if l == week_label][0]
+sel = [t for t in week_rows if t[2] == week_label]
+if not sel:
+    # Fallback to first week if something went odd
+    week_start, week_end, _ = week_rows[0]
+else:
+    week_start, week_end, _ = sel[0]
 
 # show data badge + filter
 existing = weeks_with_data(conn, retailer)
