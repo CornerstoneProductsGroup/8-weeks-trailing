@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import json
 from datetime import date, datetime, timedelta
 from openpyxl import load_workbook
 import os
@@ -138,6 +139,11 @@ def init_db(conn: sqlite3.Connection):
 
     CREATE INDEX IF NOT EXISTS idx_weekly_results_week_retailer
     ON weekly_results(week_start, retailer);
+
+    CREATE TABLE IF NOT EXISTS ui_state (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
     """)
     # In case an older DB exists, try to add unit_price (no-op if already present)
     try:
@@ -149,6 +155,59 @@ def init_db(conn: sqlite3.Connection):
 def mapping_count(conn):
     df = pd.read_sql_query("SELECT COUNT(*) AS n FROM sku_mapping", conn)
     return int(df.loc[0, "n"]) if not df.empty else 0
+
+def get_ui_state(conn, key: str, default=None):
+    try:
+        df = pd.read_sql_query("SELECT value FROM ui_state WHERE key = ?", conn, params=(key,))
+        if df.empty:
+            return default
+        return json.loads(df.loc[0, "value"])
+    except Exception:
+        return default
+
+def set_ui_state(conn, key: str, value):
+    try:
+        conn.execute(
+            "INSERT INTO ui_state(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, json.dumps(value))
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+def mapping_has_any_price(conn) -> bool:
+    try:
+        df = pd.read_sql_query("SELECT COUNT(*) AS n FROM sku_mapping WHERE unit_price IS NOT NULL", conn)
+        return int(df.loc[0, "n"]) > 0
+    except Exception:
+        return False
+
+def refresh_mapping_from_bundled_if_needed(conn):
+    """
+    If mapping exists but has no prices populated, reload from bundled Vendor-SKU Map.xlsx.
+    This fixes the common case where the DB was bootstrapped from an older map without price.
+    """
+    if mapping_count(conn) == 0:
+        return False
+    if mapping_has_any_price(conn):
+        return False
+    # Try reading bundled map relative to app.py
+    candidates = [
+        APP_DIR / "Vendor-SKU Map.xlsx",
+        Path("Vendor-SKU Map.xlsx"),
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                df_map = pd.read_excel(p, sheet_name=0)
+                # only reload if the file actually contains a price column
+                price_col = next((c for c in df_map.columns if "price" in str(c).lower()), None)
+                if price_col:
+                    upsert_mapping(conn, df_map)
+                    return True
+        except Exception:
+            continue
+    return False
 
 def upsert_mapping(conn, df: pd.DataFrame):
     df = df.copy()
@@ -451,6 +510,7 @@ st.title(APP_TITLE)
 conn = get_conn()
 init_db(conn)
 booted = bootstrap_default_mapping(conn)
+refreshed_prices = refresh_mapping_from_bundled_if_needed(conn)
 
 with st.sidebar:
     st.header("Setup (optional)")
@@ -476,15 +536,28 @@ week_meta = weeks_2026()
 labels = [w[2] for w in week_meta]
 
 # Multi-week display selector + edit week
+# Load saved UI preferences (per retailer)
+state_key = f"ui::{retailer}"
+saved = get_ui_state(conn, state_key, default={}) or {}
+saved_display = saved.get("display_weeks")
+saved_edit = saved.get("edit_week")
 default_display = labels[:9]  # partial + first 8 full weeks
-display_weeks = st.multiselect("Weeks to display (columns)", labels, default=default_display)
+# Use saved weeks if available
+if isinstance(saved_display, list):
+    default_display = [w for w in labels if w in saved_display] or default_display
+
+display_weeks = st.multiselect("Weeks to display (columns)", labels, default=default_display, key="display_weeks")
 display_weeks = [lbl for lbl in labels if lbl in display_weeks]  # keep chronological order
 
-edit_week = st.selectbox("Week to edit (units override + sales)", labels, index=0, key="edit_week")
+edit_index = labels.index(saved_edit) if (saved_edit in labels) else 0
+edit_week = st.selectbox("Week to edit (units override + sales)", labels, index=edit_index, key="edit_week")
 
 # Keep edit week included in display
 if edit_week not in display_weeks:
     display_weeks = display_weeks + [edit_week]
+
+# Persist selections
+set_ui_state(conn, state_key, {"display_weeks": display_weeks, "edit_week": edit_week})
 
 # Upload weekly export
 
