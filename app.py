@@ -519,6 +519,9 @@ if not retailers:
     st.stop()
 
 
+
+# Load retailers once (used by sidebar and main tabs)
+
 with st.sidebar:
     st.header("Setup (optional)")
     st.caption("Mapping is bundled. Only upload if you want to replace it.")
