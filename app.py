@@ -488,7 +488,7 @@ if edit_week not in display_weeks:
 
 # Upload weekly export
 
-tab_report, tab_top = st.tabs(["Report", "Top Sellers"])
+tab_report, tab_top_retailer, tab_top_vendor = st.tabs(["Report", "Top 5 by Retailer", "Top 5 by Vendor"])
 
 with tab_report:
     st.subheader("Upload units workbook (APP…) (recommended)")
@@ -615,25 +615,16 @@ with tab_report:
     st.caption("v1: 2026 weeks only. Year selector can be added later.")
 
 
-with tab_top:
-    st.subheader("Top 5 selling items (by retailer and vendor)")
-    st.caption("Uses the weeks selected in 'Weeks to display (columns)'. Ranking can be by Units or by $ (Units × Unit Price).")
+with tab_top_retailer:
+    st.subheader("Top 5 items per retailer (by Units)")
+    st.caption("Uses the weeks selected in 'Weeks to display (columns)'. Totals are summed across those weeks.")
 
-    metric = st.radio("Rank by", ["Units", "$"], horizontal=True)
-
-    # Build week_start list from the selected display weeks
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
     selected_starts = [label_to_start[lbl] for lbl in display_weeks if lbl in label_to_start]
 
     if not selected_starts:
         st.info("Select at least one week in 'Weeks to display' to compute top sellers.")
     else:
-        # Pull all mapping (for vendor + price) and all weekly results for selected weeks
-        mapping_all = pd.read_sql_query("""
-            SELECT retailer, vendor, sku, unit_price
-            FROM sku_mapping
-            WHERE active = 1
-        """, conn)
         placeholders = ",".join(["?"] * len(selected_starts))
         wk = pd.read_sql_query(f"""
             SELECT week_start, retailer, sku, units_auto, units_override
@@ -649,38 +640,73 @@ with tab_top:
 
             agg = wk.groupby(["retailer","sku"], as_index=False)["Units"].sum()
 
+            mapping_all = pd.read_sql_query("""
+                SELECT retailer, vendor, sku
+                FROM sku_mapping
+                WHERE active = 1
+            """, conn)
             dfm = agg.merge(mapping_all, on=["retailer","sku"], how="left")
-            dfm["unit_price"] = pd.to_numeric(dfm["unit_price"], errors="coerce")
-            dfm["Dollars"] = (dfm["Units"] * dfm["unit_price"].fillna(0))
-
-            # If a sku isn't in mapping, vendor/price may be NaN; keep it but label vendor unknown
             dfm["vendor"] = dfm["vendor"].fillna("Unknown")
-            dfm["unit_price"] = dfm["unit_price"]
 
-            # Choose ranking metric
-            rank_col = "Units" if metric == "Units" else "Dollars"
-
-            # Display per retailer, per vendor top 5
             for ret in sorted(dfm["retailer"].unique().tolist()):
                 st.markdown(f"### {ret}")
-                subr = dfm[dfm["retailer"]==ret].copy()
+                sub = dfm[dfm["retailer"] == ret].copy()
+                top = sub.sort_values("Units", ascending=False).head(5)
+
+                out = top.rename(columns={
+                    "vendor":"Vendor",
+                    "sku":"SKU",
+                    "Units":"Total Units (Selected Weeks)"
+                })[["SKU","Vendor","Total Units (Selected Weeks)"]]
+                st.dataframe(out, use_container_width=True)
+
+with tab_top_vendor:
+    st.subheader("Top 5 items per vendor, per retailer (by Units)")
+    st.caption("Uses the weeks selected in 'Weeks to display (columns)'. Totals are summed across those weeks.")
+
+    label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
+    selected_starts = [label_to_start[lbl] for lbl in display_weeks if lbl in label_to_start]
+
+    if not selected_starts:
+        st.info("Select at least one week in 'Weeks to display' to compute top sellers.")
+    else:
+        placeholders = ",".join(["?"] * len(selected_starts))
+        wk = pd.read_sql_query(f"""
+            SELECT week_start, retailer, sku, units_auto, units_override
+            FROM weekly_results
+            WHERE week_start IN ({placeholders})
+        """, conn, params=selected_starts)
+
+        if wk.empty:
+            st.info("No unit data found for the selected weeks yet.")
+        else:
+            wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
+            wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
+
+            agg = wk.groupby(["retailer","sku"], as_index=False)["Units"].sum()
+
+            mapping_all = pd.read_sql_query("""
+                SELECT retailer, vendor, sku
+                FROM sku_mapping
+                WHERE active = 1
+            """, conn)
+            dfm = agg.merge(mapping_all, on=["retailer","sku"], how="left")
+            dfm["vendor"] = dfm["vendor"].fillna("Unknown")
+
+            for ret in sorted(dfm["retailer"].unique().tolist()):
+                st.markdown(f"### {ret}")
+                subr = dfm[dfm["retailer"] == ret].copy()
 
                 for vend in sorted(subr["vendor"].unique().tolist()):
-                    subv = subr[subr["vendor"]==vend].copy()
+                    subv = subr[subr["vendor"] == vend].copy()
                     if subv.empty:
                         continue
-                    top = subv.sort_values(rank_col, ascending=False).head(5)
+                    top = subv.sort_values("Units", ascending=False).head(5)
 
-                    # Pretty columns
                     out = top.rename(columns={
-                        "vendor":"Vendor",
                         "sku":"SKU",
-                        "unit_price":"Unit Price",
-                        "Units":"Total Units (Selected Weeks)",
-                        "Dollars":"Total $ (Selected Weeks)"
-                    })[["Vendor","SKU","Total Units (Selected Weeks)","Unit Price","Total $ (Selected Weeks)"]]
+                        "Units":"Total Units (Selected Weeks)"
+                    })[["SKU","Total Units (Selected Weeks)"]]
 
-                    # Format currency columns nicely
                     st.write(f"**{vend}**")
                     st.dataframe(out, use_container_width=True)
-
