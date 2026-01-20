@@ -189,10 +189,26 @@ def upsert_mapping(conn, df: pd.DataFrame):
 def bootstrap_default_mapping(conn):
     """
     Load a bundled mapping file shipped with the app on first run (or when DB is empty).
-    Uses paths relative to this script so it works on Streamlit Cloud (cwd can vary).
+    Works on Streamlit Cloud where the working directory can vary.
     """
     if mapping_count(conn) > 0:
         return False
+
+    candidates = [
+        APP_DIR / "Vendor-SKU Map.xlsx",
+        APP_DIR / "Vendor-SKU Map - example.xlsx",
+        Path("Vendor-SKU Map.xlsx"),
+        Path("Vendor-SKU Map - example.xlsx"),
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                df_map = pd.read_excel(p, sheet_name=0)
+                upsert_mapping(conn, df_map)
+                return True
+        except Exception:
+            continue
+    return False
 
     candidates = [
         APP_DIR / "Vendor-SKU Map.xlsx",
@@ -364,9 +380,20 @@ def build_multiweek_df(conn, retailer: str, week_meta: list[tuple[date,date,str]
         col = pd.to_numeric(base[lbl], errors="coerce")
         units_sum = col if units_sum is None else units_sum.add(col, fill_value=0)
     base["Total $ (Units x Price)"] = (units_sum * base["Unit Price"]).where(base["Unit Price"].notna(), pd.NA)
+    # Δ Units between the last two displayed weeks (per SKU)
+    if len(display_labels) >= 2:
+        prev_lbl = display_labels[-2]
+        last_lbl = display_labels[-1]
+        prev_vals = pd.to_numeric(base[prev_lbl], errors="coerce").fillna(0)
+        last_vals = pd.to_numeric(base[last_lbl], errors="coerce").fillna(0)
+        base["Δ Units (Last - Prev)"] = last_vals - prev_vals
+    else:
+        base["Δ Units (Last - Prev)"] = pd.NA
+
+
 
     # Reorder columns: Vendor, SKU, Unit Price, week cols..., Total$, Sales, Notes
-    cols = ["Vendor","SKU","Unit Price"] + display_labels + ["Total $ (Units x Price)","Sales","Notes"]
+    cols = ["Vendor","SKU","Unit Price"] + display_labels + ["Total $ (Units x Price)","Sales","Notes","Δ Units (Last - Prev)"]
     return base[cols]
 
 def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_label: str, edited_df: pd.DataFrame):
@@ -451,6 +478,7 @@ labels = [w[2] for w in week_meta]
 # Multi-week display selector + edit week
 default_display = labels[:9]  # partial + first 8 full weeks
 display_weeks = st.multiselect("Weeks to display (columns)", labels, default=default_display)
+display_weeks = [lbl for lbl in labels if lbl in display_weeks]  # keep chronological order
 
 edit_week = st.selectbox("Week to edit (units override + sales)", labels, index=0, key="edit_week")
 
@@ -528,7 +556,7 @@ if df.empty:
     st.stop()
 
 # Disable columns: Vendor, SKU, Unit Price, non-edit weeks, Total$
-disabled_cols = ["Vendor","SKU","Unit Price","Total $ (Units x Price)"] + [w for w in display_weeks if w != edit_week]
+disabled_cols = ["Vendor","SKU","Unit Price","Total $ (Units x Price)","Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
 # Sales is far right (editable), Notes editable
 edited = st.data_editor(
     df,
@@ -549,6 +577,35 @@ with c1:
         save_edit_week(conn, retailer, start, end, edit_week, edited)
         st.success("Saved.")
 with c2:
-    st.caption("Only the column for the selected edit week is editable. Sales stays at the far right. Use the checkbox above to hide SKUs with no units.")
+    st.caption("Only the column for the selected edit week is editable. Sales is near the right; the far-right column shows Δ Units (last selected week minus the previous week). Use the checkbox above to hide SKUs with no units.")
+
+
+
+st.divider()
+st.subheader("Totals (shown rows)")
+
+# Totals for each displayed week
+week_cols = [c for c in display_weeks if c in edited.columns]
+unit_price = pd.to_numeric(edited["Unit Price"], errors="coerce")
+
+tot_units = {}
+tot_dollars = {}
+for w in week_cols:
+    u = pd.to_numeric(edited[w], errors="coerce").fillna(0)
+    tot_units[w] = float(u.sum())
+    tot_dollars[w] = float((u * unit_price.fillna(0)).sum())
+
+tot_df = pd.DataFrame([tot_units, tot_dollars], index=["Total Units", "Total $"])
+# Add diff totals between last two weeks selected
+if len(week_cols) >= 2:
+    prev_w, last_w = week_cols[-2], week_cols[-1]
+    tot_df["Δ Units (Last - Prev)"] = [tot_units[last_w] - tot_units[prev_w], pd.NA]
+    tot_df["Δ $ (Last - Prev)"] = [pd.NA, tot_dollars[last_w] - tot_dollars[prev_w]]
+else:
+    tot_df["Δ Units (Last - Prev)"] = [pd.NA, pd.NA]
+    tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
+
+st.dataframe(tot_df, use_container_width=True)
+
 
 st.caption("v1: 2026 weeks only. Year selector can be added later.")
