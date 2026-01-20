@@ -3,9 +3,83 @@ import pandas as pd
 import sqlite3
 from datetime import date, datetime, timedelta
 from openpyxl import load_workbook
+import os
+import re
+
+def parse_week_label_from_filename(filename: str):
+    """
+    Accepts filenames like:
+      'APP 1-1 thru 1-2.xlsx'
+      'APP 1-5 thru 1-9.xlsx'
+    Returns (label, start_date, end_date) for 2026, or (None,None,None) if not matched.
+    """
+    base = os.path.basename(filename)
+    m = re.search(r'APP\s+(\d{1,2})-(\d{1,2})\s+thru\s+(\d{1,2})-(\d{1,2})', base, re.IGNORECASE)
+    if not m:
+        return None, None, None
+    m1, d1, m2, d2 = map(int, m.groups())
+    try:
+        start = date(2026, m1, d1)
+        end = date(2026, m2, d2)
+    except Exception:
+        return None, None, None
+    label = f"{m1}-{d1} / {m2}-{d2}"
+    return label, start, end
+
+def norm_name(s: str):
+    if s is None:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(s).lower())
+
+def normalize_retailer_sheet_name(sheet_name: str):
+    """
+    Maps uploaded sheet names to your retailer names used in the mapping.
+    Adjust here if your mapping uses different naming.
+    """
+    n = norm_name(sheet_name)
+    if n in ("depot", "homedepot", "thehomedepot"):
+        return "Depot"
+    if n in ("lowes", "lowesinc"):
+        return "Lowe's"
+    if n == "amazon":
+        return "Amazon"
+    if n in ("tractorsupply", "tsc", "tractorsupplyco"):
+        return "Tractor Supply"
+    if n in ("depotso", "depotspecialorders", "specialorders"):
+        return "Depot SO"
+    return sheet_name  # fallback
+
+def parse_app_aggregated_sheet(ws):
+    """
+    APP workbook format: SKU in col A, Units in col B (already aggregated).
+    Skips title rows like 'Depot '.
+    """
+    out = {}
+    for r in range(1, ws.max_row + 1):
+        sku = ws.cell(r, 1).value
+        qty = ws.cell(r, 2).value
+        if sku is None:
+            continue
+        sku_str = str(sku).strip()
+        if sku_str == "" or sku_str.lower() in ("sku", "vendor style"):
+            continue
+        # skip title row like "Depot "
+        if qty is None and len(sku_str) <= 20 and sku_str.lower().strip() in ("depot", "depot ", "lowe's", "amazon", "tractor supply", "depot so"):
+            continue
+        try:
+            q = float(qty)
+        except Exception:
+            continue
+        # keep zeros too? We'll ignore zeros to avoid clutter
+        if q == 0:
+            continue
+        out[sku_str] = out.get(sku_str, 0.0) + q
+    return out
+from pathlib import Path
 
 APP_TITLE = "Weekly Retailer Report (Multi-week View)"
 DB_PATH = "app.db"
+APP_DIR = Path(__file__).resolve().parent
 
 # -----------------------------
 # Week selector (2026 only for now)
@@ -113,8 +187,28 @@ def upsert_mapping(conn, df: pd.DataFrame):
     conn.commit()
 
 def bootstrap_default_mapping(conn):
+    """
+    Load a bundled mapping file shipped with the app on first run (or when DB is empty).
+    Uses paths relative to this script so it works on Streamlit Cloud (cwd can vary).
+    """
     if mapping_count(conn) > 0:
         return False
+
+    candidates = [
+        APP_DIR / "Vendor-SKU Map.xlsx",
+        APP_DIR / "Vendor-SKU Map - example.xlsx",
+        Path("Vendor-SKU Map.xlsx"),
+        Path("Vendor-SKU Map - example.xlsx"),
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                df_map = pd.read_excel(p, sheet_name=0)
+                upsert_mapping(conn, df_map)
+                return True
+        except Exception:
+            continue
+    return False
     for fn in ["Vendor-SKU Map.xlsx", "Vendor-SKU Map - example.xlsx"]:
         try:
             df_map = pd.read_excel(fn, sheet_name=0)
@@ -329,11 +423,12 @@ st.title(APP_TITLE)
 
 conn = get_conn()
 init_db(conn)
-bootstrap_default_mapping(conn)
+booted = bootstrap_default_mapping(conn)
 
 with st.sidebar:
     st.header("Setup (optional)")
     st.caption("Mapping is bundled. Only upload if you want to replace it.")
+    st.write("✅ Loaded bundled mapping" if booted else "ℹ️ Using existing mapping in database")
     map_file = st.file_uploader("Upload Vendor-SKU Map (.xlsx) (optional)", type=["xlsx"])
     if map_file is not None:
         try:
@@ -357,37 +452,63 @@ labels = [w[2] for w in week_meta]
 default_display = labels[:9]  # partial + first 8 full weeks
 display_weeks = st.multiselect("Weeks to display (columns)", labels, default=default_display)
 
-edit_week = st.selectbox("Week to edit (units override + sales)", labels, index=0)
+edit_week = st.selectbox("Week to edit (units override + sales)", labels, index=0, key="edit_week")
 
 # Keep edit week included in display
 if edit_week not in display_weeks:
     display_weeks = display_weeks + [edit_week]
 
 # Upload weekly export
-st.subheader("Upload weekly retailer export (optional)")
-up = st.file_uploader("Upload weekly export workbook (.xlsx)", type=["xlsx"], key="weekly_upload")
-st.caption("This fills Units (auto) for the chosen edit week. You can repeat uploads week-by-week.")
+st.subheader("Upload units workbook (APP…) (recommended)")
+app_file = st.file_uploader("Upload the weekly APP workbook (.xlsx)", type=["xlsx"], key="app_units_upload")
+st.caption("Expected filename: 'APP M-D thru M-D.xlsx' and sheets named by retailer (Depot, Lowe's, Amazon, Tractor Supply, Depot SO). Each sheet should be 2 columns: SKU + Units.")
 
-if up is not None:
-    # Choose which sheet to parse
+parsed_label = None
+parsed_start = None
+parsed_end = None
+
+if app_file is not None:
+    # Try to auto-detect the week from the filename
     try:
-        wb_ro = load_workbook(up, read_only=True, data_only=True)
-        sheets = wb_ro.sheetnames
+        parsed_label, parsed_start, parsed_end = parse_week_label_from_filename(getattr(app_file, "name", ""))
     except Exception:
-        sheets = []
-    if sheets:
-        chosen_sheet = st.selectbox("Which sheet contains this retailer's data?", sheets)
-        if st.button("Import Units for the edit week", type="primary"):
-            units = parse_weekly_workbook(up, chosen_sheet)
-            if units:
-                # map edit_week -> dates
-                start, end, _ = next((a,b,l) for a,b,l in week_meta if l == edit_week)
-                set_units_auto_from_upload(conn, start, end, retailer, units)
-                st.success(f"Imported units for {len(units)} SKUs into {retailer} for week {edit_week}.")
-            else:
-                st.warning("No units found to import (format may differ).")
+        parsed_label, parsed_start, parsed_end = None, None, None
+
+    if parsed_label:
+        st.success(f"Detected week from filename: {parsed_label}")
+        # If the detected label exists in our week list, set it as the edit week default via session state
+        if "edit_week" in st.session_state:
+            pass
+        # show dates
+        st.write(f"Start: {parsed_start.isoformat()}  |  End: {parsed_end.isoformat()}")
     else:
-        st.warning("Couldn't read sheets from the uploaded file.")
+        st.warning("Couldn't detect week from filename. Use the 'Week to edit' selector above, or rename the file like: APP 1-5 thru 1-9.xlsx")
+
+    # Import button
+    if st.button("Import units from APP workbook into the selected Edit Week", type="primary"):
+        # Determine which week to write to (prefer parsed filename if it matches edit_week)
+        chosen_label = edit_week
+        chosen_start, chosen_end, _ = next((a,b,l) for a,b,l in week_meta if l == chosen_label)
+
+        # Read workbook and import every sheet as its retailer
+        wb_up = load_workbook(app_file, data_only=True)
+        imported = []
+        skipped = []
+        for sh in wb_up.sheetnames:
+            retailer_name = normalize_retailer_sheet_name(sh)
+            ws = wb_up[sh]
+            units = parse_app_aggregated_sheet(ws)
+            if not units:
+                skipped.append(sh)
+                continue
+            set_units_auto_from_upload(conn, chosen_start, chosen_end, retailer_name, units)
+            imported.append((retailer_name, len(units)))
+
+        if imported:
+            msg = ", ".join([f"{r} ({n})" for r,n in imported])
+            st.success(f"Imported units for: {msg}")
+        if skipped:
+            st.caption(f"Skipped empty/unrecognized sheets: {', '.join(skipped)}")
 
 st.divider()
 
