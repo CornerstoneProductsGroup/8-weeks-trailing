@@ -599,8 +599,8 @@ with tab_report:
     disabled_cols = ["Vendor","SKU","Unit Price","Total $ (Units x Price)","Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
     # Sales is far right (editable), Notes editable
     edited = st.data_editor(
+    df,
     height=860,
-        df,
         use_container_width=True,
         hide_index=True,
         disabled=disabled_cols,
