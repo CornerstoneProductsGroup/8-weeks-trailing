@@ -504,34 +504,54 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # -----------------------------
 # UI
 # -----------------------------
+# -----------------------------
+# UI
+# -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
-st.markdown("""<style>.block-container{padding-top:1.2rem;padding-bottom:1.2rem;}section[data-testid="stSidebar"] .block-container{padding-top:1rem;}</style>""", unsafe_allow_html=True)
+
+# Light padding so the table fits more rows
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1.0rem; padding-bottom: 1.0rem; }
+      section[data-testid="stSidebar"] .block-container { padding-top: 0.8rem; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 conn = get_conn()
 init_db(conn)
 booted = bootstrap_default_mapping(conn)
 refreshed_prices = refresh_mapping_from_bundled_if_needed(conn)
 
-# Load retailers once (used by sidebar and main tabs)
+# Load retailers ONCE, before any sidebar/main references
+retailers = get_retailers(conn)
 if not retailers:
-    st.error("No retailers found. Check Vendor-SKU Map.")
+    st.error("No retailers found. Make sure 'Vendor-SKU Map.xlsx' is in the repo (or upload one in the sidebar).")
     st.stop()
 
+week_meta = weeks_2026()
+labels = [w[2] for w in week_meta]
 
-
-# Load retailers once (used by sidebar and main tabs)
-
+# -----------------------------
+# Sidebar controls (retailer/weeks/upload)
+# -----------------------------
 with st.sidebar:
     st.header("Setup (optional)")
-    st.caption("Mapping is bundled. Only upload if you want to replace it.")
+    st.caption("Vendor map is bundled in the repo. Upload only if you want to replace it.")
     st.write("✅ Loaded bundled mapping" if booted else "ℹ️ Using existing mapping in database")
+    if refreshed_prices:
+        st.success("Prices refreshed from bundled vendor map")
+
     map_file = st.file_uploader("Upload Vendor-SKU Map (.xlsx) (optional)", type=["xlsx"])
     if map_file is not None:
         try:
             df_map = pd.read_excel(map_file, sheet_name=0)
             upsert_mapping(conn, df_map)
-            st.success("Mapping updated.")
+            st.success("Mapping updated. Reloading retailers…")
+            retailers = get_retailers(conn)
         except Exception as e:
             st.error(f"Mapping upload failed: {e}")
 
@@ -540,18 +560,39 @@ with st.sidebar:
 
     retailer = st.selectbox("Retailer", retailers, key="retailer_sidebar")
 
-    
+    # Restore saved selections per retailer
+    state_key = f"ui::{retailer}"
+    saved = get_ui_state(conn, state_key, default={}) or {}
+    saved_display = saved.get("display_weeks")
+    saved_edit = saved.get("edit_week")
+
+    default_display = labels[:9]  # partial + first 8 full weeks
+    if isinstance(saved_display, list):
+        default_display = [w for w in labels if w in saved_display] or default_display
+
+    display_weeks = st.multiselect("Weeks to display", labels, default=default_display, key="display_weeks_sidebar")
+    display_weeks = [lbl for lbl in labels if lbl in display_weeks]  # keep chronological order
+
+    edit_index = labels.index(saved_edit) if (saved_edit in labels) else 0
+    edit_week = st.selectbox("Week to edit", labels, index=edit_index, key="edit_week_sidebar")
+
+    if edit_week not in display_weeks:
+        display_weeks = display_weeks + [edit_week]
+
+    # Persist selections every run
+    set_ui_state(conn, state_key, {"display_weeks": display_weeks, "edit_week": edit_week})
+
     st.divider()
     st.subheader("Upload units (APP workbook)")
     app_file = st.file_uploader("Weekly APP workbook (.xlsx)", type=["xlsx"], key="app_units_upload")
+
     if app_file is not None:
-        parsed_label, parsed_start, parsed_end = parse_week_label_from_filename(getattr(app_file, "name", ""))
+        parsed_label, _, _ = parse_week_label_from_filename(getattr(app_file, "name", ""))
         if parsed_label:
             st.caption(f"Detected week in filename: {parsed_label}")
 
         if st.button("Import units into Edit Week", type="primary", use_container_width=True):
-            chosen_label = edit_week
-            chosen_start, chosen_end, _ = next((a,b,l) for a,b,l in week_meta if l == chosen_label)
+            chosen_start, chosen_end, _ = next((a, b, l) for a, b, l in week_meta if l == edit_week)
 
             wb_up = load_workbook(app_file, data_only=True)
             imported = []
@@ -567,86 +608,77 @@ with st.sidebar:
                 imported.append((retailer_name, len(units)))
 
             if imported:
-                msg = ", ".join([f"{r} ({n})" for r,n in imported])
+                msg = ", ".join([f"{r} ({n})" for r, n in imported])
                 st.success(f"Imported: {msg}")
             if skipped:
                 st.caption(f"Skipped empty sheets: {', '.join(skipped)}")
 
-retailers = get_retailers(conn)
-if not retailers:
-    st.info("No mapping loaded. Ensure 'Vendor-SKU Map.xlsx' is present or upload one in the sidebar.")
-    st.stop()
-
-week_meta = weeks_2026()
-labels = [w[2] for w in week_meta]
-
-
-# Upload weekly export
-
+# -----------------------------
+# Main tabs
+# -----------------------------
 tab_report, tab_top_retailer, tab_top_vendor = st.tabs(["Report", "Top 5 by Retailer", "Top 5 by Vendor"])
 
 with tab_report:
     st.markdown(f"**Retailer:** {retailer}  |  **Edit week:** {edit_week}  |  **Weeks shown:** {', '.join(display_weeks)}")
-    st.divider()
-    
+
     # Build and render table
     df = build_multiweek_df(conn, retailer, week_meta, display_weeks, edit_week)
-    # Optional filter: show only rows with activity (units > 0 in any displayed week OR sales entered)
-    show_only_with_units = st.checkbox('Show only items with units (or sales)', value=True)
+
+    # Optional filter: only show items with activity
+    show_only_with_units = st.checkbox("Show only items with units (or sales)", value=True)
     if show_only_with_units and not df.empty:
         week_cols = [c for c in display_weeks if c in df.columns]
-        # treat blanks as 0, and include rows where any week col > 0 OR sales is filled
-        units_any = (df[week_cols].apply(pd.to_numeric, errors='coerce').fillna(0) > 0).any(axis=1) if week_cols else pd.Series([False]*len(df))
-        sales_any = pd.to_numeric(df['Sales'], errors='coerce').fillna(0) != 0
+        units_any = (df[week_cols].apply(pd.to_numeric, errors="coerce").fillna(0) > 0).any(axis=1) if week_cols else pd.Series([False] * len(df))
+        sales_any = pd.to_numeric(df["Sales"], errors="coerce").fillna(0) != 0
         df = df[units_any | sales_any].reset_index(drop=True)
-    if df.empty:
 
-        st.info("No rows for this retailer in your mapping.")
+    if df.empty:
+        st.info("No rows for this retailer in your mapping (or no activity for the selected weeks).")
         st.stop()
 
-    # Disable columns: Vendor, SKU, Unit Price, non-edit weeks, Total$
-    disabled_cols = ["Vendor","SKU","Unit Price","Total $ (Units x Price)","Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
-    # Sales is far right (editable), Notes editable
+    # Disable columns: keep Vendor/SKU/Price and non-edit weeks read-only
+    disabled_cols = ["Vendor", "SKU", "Unit Price", "Total $ (Units x Price)", "Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
+
     edited = st.data_editor(
-    df,
-    height=860,
+        df,
+        height=900,
         use_container_width=True,
         hide_index=True,
         disabled=disabled_cols,
-        column_config={**{w: st.column_config.NumberColumn(format="%.0f") for w in display_weeks},
-                      "Unit Price": st.column_config.NumberColumn(format="$%,.2f"),
-                      "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f"),
-                      "Sales": st.column_config.NumberColumn(help="Manual sales for the edit week (optional).", format="$%,.2f"),
-                      "Notes": st.column_config.TextColumn()}
+        column_config={
+            **{w: st.column_config.NumberColumn(format="%.0f") for w in display_weeks},
+            "Unit Price": st.column_config.NumberColumn(format="$%,.2f"),
+            "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f"),
+            "Sales": st.column_config.NumberColumn(help="Manual sales for the edit week (optional).", format="$%,.2f"),
+            "Notes": st.column_config.TextColumn(),
+            "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f"),
+        }
     )
 
-    c1, c2 = st.columns([1,3])
+    c1, c2 = st.columns([1, 3])
     with c1:
         if st.button("Save edits", type="primary"):
-            start, end, _ = next((a,b,l) for a,b,l in week_meta if l == edit_week)
+            start, end, _ = next((a, b, l) for a, b, l in week_meta if l == edit_week)
             save_edit_week(conn, retailer, start, end, edit_week, edited)
             st.success("Saved.")
     with c2:
-        st.caption("Only the column for the selected edit week is editable. Sales is near the right; the far-right column shows Δ Units (last selected week minus the previous week). Use the checkbox above to hide SKUs with no units.")
-
-
+        st.caption("Only the selected Edit Week column is editable. Far-right column shows Δ Units (last selected week minus the previous week).")
 
     st.divider()
     st.subheader("Totals (shown rows)")
 
-    # Totals for each displayed week
     week_cols = [c for c in display_weeks if c in edited.columns]
-    unit_price = pd.to_numeric(edited["Unit Price"], errors="coerce")
+    unit_price = pd.to_numeric(edited["Unit Price"], errors="coerce").fillna(0)
 
     tot_units = {}
     tot_dollars = {}
     for w in week_cols:
         u = pd.to_numeric(edited[w], errors="coerce").fillna(0)
         tot_units[w] = float(u.sum())
-        tot_dollars[w] = float((u * unit_price.fillna(0)).sum())
+        tot_dollars[w] = float((u * unit_price).sum())
 
     tot_df = pd.DataFrame([tot_units, tot_dollars], index=["Total Units", "Total $"])
-    # Add diff totals between last two weeks selected
+
     if len(week_cols) >= 2:
         prev_w, last_w = week_cols[-2], week_cols[-1]
         tot_df["Δ Units (Last - Prev)"] = [tot_units[last_w] - tot_units[prev_w], pd.NA]
@@ -657,26 +689,26 @@ with tab_report:
 
     st.dataframe(tot_df, use_container_width=True)
 
-
-    st.caption("v1: 2026 weeks only. Year selector can be added later.")
-
-
 with tab_top_retailer:
     st.subheader("Top 5 items per retailer (by Units)")
-    st.caption("Uses the weeks selected in 'Weeks to display (columns)'. Totals are summed across those weeks.")
+    st.caption("Uses the weeks selected in 'Weeks to display'. Totals are summed across those weeks.")
 
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
     selected_starts = [label_to_start[lbl] for lbl in display_weeks if lbl in label_to_start]
 
     if not selected_starts:
-        st.info("Select at least one week in 'Weeks to display' to compute top sellers.")
+        st.info("Select at least one week to compute top sellers.")
     else:
         placeholders = ",".join(["?"] * len(selected_starts))
-        wk = pd.read_sql_query(f"""
+        wk = pd.read_sql_query(
+            f"""
             SELECT week_start, retailer, sku, units_auto, units_override
             FROM weekly_results
             WHERE week_start IN ({placeholders})
-        """, conn, params=selected_starts)
+            """,
+            conn,
+            params=selected_starts
+        )
 
         if wk.empty:
             st.info("No unit data found for the selected weeks yet.")
@@ -684,14 +716,17 @@ with tab_top_retailer:
             wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
             wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
 
-            agg = wk.groupby(["retailer","sku"], as_index=False)["Units"].sum()
+            agg = wk.groupby(["retailer", "sku"], as_index=False)["Units"].sum()
 
-            mapping_all = pd.read_sql_query("""
+            mapping_all = pd.read_sql_query(
+                """
                 SELECT retailer, vendor, sku
                 FROM sku_mapping
                 WHERE active = 1
-            """, conn)
-            dfm = agg.merge(mapping_all, on=["retailer","sku"], how="left")
+                """,
+                conn
+            )
+            dfm = agg.merge(mapping_all, on=["retailer", "sku"], how="left")
             dfm["vendor"] = dfm["vendor"].fillna("Unknown")
 
             for ret in sorted(dfm["retailer"].unique().tolist()):
@@ -700,28 +735,32 @@ with tab_top_retailer:
                 top = sub.sort_values("Units", ascending=False).head(5)
 
                 out = top.rename(columns={
-                    "vendor":"Vendor",
-                    "sku":"SKU",
-                    "Units":"Total Units (Selected Weeks)"
-                })[["SKU","Vendor","Total Units (Selected Weeks)"]]
+                    "vendor": "Vendor",
+                    "sku": "SKU",
+                    "Units": "Total Units (Selected Weeks)"
+                })[["SKU", "Vendor", "Total Units (Selected Weeks)"]]
                 st.dataframe(out, use_container_width=True)
 
 with tab_top_vendor:
     st.subheader("Top 5 items per vendor, per retailer (by Units)")
-    st.caption("Uses the weeks selected in 'Weeks to display (columns)'. Totals are summed across those weeks.")
+    st.caption("Uses the weeks selected in 'Weeks to display'. Totals are summed across those weeks.")
 
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
     selected_starts = [label_to_start[lbl] for lbl in display_weeks if lbl in label_to_start]
 
     if not selected_starts:
-        st.info("Select at least one week in 'Weeks to display' to compute top sellers.")
+        st.info("Select at least one week to compute top sellers.")
     else:
         placeholders = ",".join(["?"] * len(selected_starts))
-        wk = pd.read_sql_query(f"""
+        wk = pd.read_sql_query(
+            f"""
             SELECT week_start, retailer, sku, units_auto, units_override
             FROM weekly_results
             WHERE week_start IN ({placeholders})
-        """, conn, params=selected_starts)
+            """,
+            conn,
+            params=selected_starts
+        )
 
         if wk.empty:
             st.info("No unit data found for the selected weeks yet.")
@@ -729,14 +768,17 @@ with tab_top_vendor:
             wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
             wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
 
-            agg = wk.groupby(["retailer","sku"], as_index=False)["Units"].sum()
+            agg = wk.groupby(["retailer", "sku"], as_index=False)["Units"].sum()
 
-            mapping_all = pd.read_sql_query("""
+            mapping_all = pd.read_sql_query(
+                """
                 SELECT retailer, vendor, sku
                 FROM sku_mapping
                 WHERE active = 1
-            """, conn)
-            dfm = agg.merge(mapping_all, on=["retailer","sku"], how="left")
+                """,
+                conn
+            )
+            dfm = agg.merge(mapping_all, on=["retailer", "sku"], how="left")
             dfm["vendor"] = dfm["vendor"].fillna("Unknown")
 
             for ret in sorted(dfm["retailer"].unique().tolist()):
@@ -747,12 +789,13 @@ with tab_top_vendor:
                     subv = subr[subr["vendor"] == vend].copy()
                     if subv.empty:
                         continue
+
                     top = subv.sort_values("Units", ascending=False).head(5)
 
                     out = top.rename(columns={
-                        "sku":"SKU",
-                        "Units":"Total Units (Selected Weeks)"
-                    })[["SKU","Total Units (Selected Weeks)"]]
+                        "sku": "SKU",
+                        "Units": "Total Units (Selected Weeks)"
+                    })[["SKU", "Total Units (Selected Weeks)"]]
 
                     st.write(f"**{vend}**")
                     st.dataframe(out, use_container_width=True)

@@ -28,3 +28,6 @@ Upload a new map in the sidebar only if you want to replace it.
 
 ## Data storage
 SQLite database file: `app.db`
+
+## Sidebar controls
+Retailer, week selection, and APP workbook upload/import live in the sidebar.
