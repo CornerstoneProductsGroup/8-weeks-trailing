@@ -506,6 +506,7 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
+st.markdown("""<style>.block-container{padding-top:1.2rem;padding-bottom:1.2rem;}section[data-testid="stSidebar"] .block-container{padding-top:1rem;}</style>""", unsafe_allow_html=True)
 
 conn = get_conn()
 init_db(conn)
@@ -525,77 +526,24 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Mapping upload failed: {e}")
 
-retailers = get_retailers(conn)
-if not retailers:
-    st.info("No mapping loaded. Ensure 'Vendor-SKU Map.xlsx' is present or upload one in the sidebar.")
-    st.stop()
+    st.divider()
+    st.header("Report controls")
 
-retailer = st.selectbox("Retailer", retailers)
+    retailer = st.selectbox("Retailer", retailers, key="retailer_sidebar")
 
-week_meta = weeks_2026()
-labels = [w[2] for w in week_meta]
-
-# Multi-week display selector + edit week
-# Load saved UI preferences (per retailer)
-state_key = f"ui::{retailer}"
-saved = get_ui_state(conn, state_key, default={}) or {}
-saved_display = saved.get("display_weeks")
-saved_edit = saved.get("edit_week")
-default_display = labels[:9]  # partial + first 8 full weeks
-# Use saved weeks if available
-if isinstance(saved_display, list):
-    default_display = [w for w in labels if w in saved_display] or default_display
-
-display_weeks = st.multiselect("Weeks to display (columns)", labels, default=default_display, key="display_weeks")
-display_weeks = [lbl for lbl in labels if lbl in display_weeks]  # keep chronological order
-
-edit_index = labels.index(saved_edit) if (saved_edit in labels) else 0
-edit_week = st.selectbox("Week to edit (units override + sales)", labels, index=edit_index, key="edit_week")
-
-# Keep edit week included in display
-if edit_week not in display_weeks:
-    display_weeks = display_weeks + [edit_week]
-
-# Persist selections
-set_ui_state(conn, state_key, {"display_weeks": display_weeks, "edit_week": edit_week})
-
-# Upload weekly export
-
-tab_report, tab_top_retailer, tab_top_vendor = st.tabs(["Report", "Top 5 by Retailer", "Top 5 by Vendor"])
-
-with tab_report:
-    st.subheader("Upload units workbook (APP…) (recommended)")
-    app_file = st.file_uploader("Upload the weekly APP workbook (.xlsx)", type=["xlsx"], key="app_units_upload")
-    st.caption("Expected filename: 'APP M-D thru M-D.xlsx' and sheets named by retailer (Depot, Lowe's, Amazon, Tractor Supply, Depot SO). Each sheet should be 2 columns: SKU + Units.")
-
-    parsed_label = None
-    parsed_start = None
-    parsed_end = None
-
+    
+    st.divider()
+    st.subheader("Upload units (APP workbook)")
+    app_file = st.file_uploader("Weekly APP workbook (.xlsx)", type=["xlsx"], key="app_units_upload")
     if app_file is not None:
-        # Try to auto-detect the week from the filename
-        try:
-            parsed_label, parsed_start, parsed_end = parse_week_label_from_filename(getattr(app_file, "name", ""))
-        except Exception:
-            parsed_label, parsed_start, parsed_end = None, None, None
-
+        parsed_label, parsed_start, parsed_end = parse_week_label_from_filename(getattr(app_file, "name", ""))
         if parsed_label:
-            st.success(f"Detected week from filename: {parsed_label}")
-            # If the detected label exists in our week list, set it as the edit week default via session state
-            if "edit_week" in st.session_state:
-                pass
-            # show dates
-            st.write(f"Start: {parsed_start.isoformat()}  |  End: {parsed_end.isoformat()}")
-        else:
-            st.warning("Couldn't detect week from filename. Use the 'Week to edit' selector above, or rename the file like: APP 1-5 thru 1-9.xlsx")
+            st.caption(f"Detected week in filename: {parsed_label}")
 
-        # Import button
-        if st.button("Import units from APP workbook into the selected Edit Week", type="primary"):
-            # Determine which week to write to (prefer parsed filename if it matches edit_week)
+        if st.button("Import units into Edit Week", type="primary", use_container_width=True):
             chosen_label = edit_week
             chosen_start, chosen_end, _ = next((a,b,l) for a,b,l in week_meta if l == chosen_label)
 
-            # Read workbook and import every sheet as its retailer
             wb_up = load_workbook(app_file, data_only=True)
             imported = []
             skipped = []
@@ -611,12 +559,27 @@ with tab_report:
 
             if imported:
                 msg = ", ".join([f"{r} ({n})" for r,n in imported])
-                st.success(f"Imported units for: {msg}")
+                st.success(f"Imported: {msg}")
             if skipped:
-                st.caption(f"Skipped empty/unrecognized sheets: {', '.join(skipped)}")
+                st.caption(f"Skipped empty sheets: {', '.join(skipped)}")
 
+retailers = get_retailers(conn)
+if not retailers:
+    st.info("No mapping loaded. Ensure 'Vendor-SKU Map.xlsx' is present or upload one in the sidebar.")
+    st.stop()
+
+week_meta = weeks_2026()
+labels = [w[2] for w in week_meta]
+
+
+# Upload weekly export
+
+tab_report, tab_top_retailer, tab_top_vendor = st.tabs(["Report", "Top 5 by Retailer", "Top 5 by Vendor"])
+
+with tab_report:
+    st.markdown(f"**Retailer:** {retailer}  |  **Edit week:** {edit_week}  |  **Weeks shown:** {', '.join(display_weeks)}")
     st.divider()
-
+    
     # Build and render table
     df = build_multiweek_df(conn, retailer, week_meta, display_weeks, edit_week)
     # Optional filter: show only rows with activity (units > 0 in any displayed week OR sales entered)
@@ -636,6 +599,7 @@ with tab_report:
     disabled_cols = ["Vendor","SKU","Unit Price","Total $ (Units x Price)","Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
     # Sales is far right (editable), Notes editable
     edited = st.data_editor(
+    height=860,
         df,
         use_container_width=True,
         hide_index=True,
