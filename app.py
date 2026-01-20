@@ -636,8 +636,15 @@ with tab_report:
         st.info("No rows for this retailer in your mapping (or no activity for the selected weeks).")
         st.stop()
 
-    # Disable columns: keep Vendor/SKU/Price and non-edit weeks read-only
-    disabled_cols = ["Vendor", "SKU", "Unit Price", "Total $ (Units x Price)", "Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
+    # Keep Unit Price for calculations, but hide it from the table
+    unit_price = pd.to_numeric(df["Unit Price"], errors="coerce").fillna(0)
+    df = df.drop(columns=["Unit Price"])
+    # Keep Sales and Notes for persistence, but hide from the table
+    hidden_sales = pd.to_numeric(df["Sales"], errors="coerce") if "Sales" in df.columns else None
+    df = df.drop(columns=[c for c in ["Sales", "Notes"] if c in df.columns])
+
+    # Disable columns: keep Vendor/SKU and non-edit weeks read-only
+    disabled_cols = ["Vendor", "SKU", "Total $ (Units x Price)", "Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
 
     edited = st.data_editor(
         df,
@@ -647,11 +654,7 @@ with tab_report:
         disabled=disabled_cols,
         column_config={
             **{w: st.column_config.NumberColumn(format="%.0f") for w in display_weeks},
-            "Unit Price": st.column_config.NumberColumn(format="$%,.2f"),
-            "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f"),
-            "Sales": st.column_config.NumberColumn(help="Manual sales for the edit week (optional).", format="$%,.2f"),
-            "Notes": st.column_config.TextColumn(),
-            "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f"),
+            "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f"),            "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f"),
         }
     )
 
@@ -668,7 +671,7 @@ with tab_report:
     st.subheader("Totals (shown rows)")
 
     week_cols = [c for c in display_weeks if c in edited.columns]
-    unit_price = pd.to_numeric(edited["Unit Price"], errors="coerce").fillna(0)
+    # unit_price captured above (hidden from table)
 
     tot_units = {}
     tot_dollars = {}
@@ -686,8 +689,12 @@ with tab_report:
     else:
         tot_df["Δ Units (Last - Prev)"] = [pd.NA, pd.NA]
         tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
-
-    st.dataframe(tot_df, use_container_width=True)
+    # Format totals for display
+    tot_df_display = tot_df.copy()
+    for c in tot_df_display.columns:
+        if "$" in c:
+            tot_df_display[c] = tot_df_display[c].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    st.dataframe(tot_df_display, use_container_width=True)
 
 with tab_top_retailer:
     st.subheader("Top 5 items per retailer (by Units)")
