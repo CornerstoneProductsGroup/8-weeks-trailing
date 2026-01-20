@@ -513,6 +513,12 @@ init_db(conn)
 booted = bootstrap_default_mapping(conn)
 refreshed_prices = refresh_mapping_from_bundled_if_needed(conn)
 
+# Load retailers once (used by sidebar and main tabs)
+if not retailers:
+    st.error("No retailers found. Check Vendor-SKU Map.")
+    st.stop()
+
+
 with st.sidebar:
     st.header("Setup (optional)")
     st.caption("Mapping is bundled. Only upload if you want to replace it.")
