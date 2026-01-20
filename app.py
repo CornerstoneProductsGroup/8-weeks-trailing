@@ -564,9 +564,9 @@ edited = st.data_editor(
     hide_index=True,
     disabled=disabled_cols,
     column_config={**{w: st.column_config.NumberColumn(format="%.0f") for w in display_weeks},
-                  "Unit Price": st.column_config.NumberColumn(format="%.2f"),
-                  "Total $ (Units x Price)": st.column_config.NumberColumn(format="%.2f"),
-                  "Sales": st.column_config.NumberColumn(help="Manual sales for the edit week (optional).", format="%.2f"),
+                  "Unit Price": st.column_config.NumberColumn(format="$%,.2f"),
+                  "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f"),
+                  "Sales": st.column_config.NumberColumn(help="Manual sales for the edit week (optional).", format="$%,.2f"),
                   "Notes": st.column_config.TextColumn()}
 )
 
