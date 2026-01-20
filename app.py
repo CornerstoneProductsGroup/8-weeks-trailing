@@ -393,7 +393,16 @@ st.divider()
 
 # Build and render table
 df = build_multiweek_df(conn, retailer, week_meta, display_weeks, edit_week)
+# Optional filter: show only rows with activity (units > 0 in any displayed week OR sales entered)
+show_only_with_units = st.checkbox('Show only items with units (or sales)', value=True)
+if show_only_with_units and not df.empty:
+    week_cols = [c for c in display_weeks if c in df.columns]
+    # treat blanks as 0, and include rows where any week col > 0 OR sales is filled
+    units_any = (df[week_cols].apply(pd.to_numeric, errors='coerce').fillna(0) > 0).any(axis=1) if week_cols else pd.Series([False]*len(df))
+    sales_any = pd.to_numeric(df['Sales'], errors='coerce').fillna(0) != 0
+    df = df[units_any | sales_any].reset_index(drop=True)
 if df.empty:
+
     st.info("No rows for this retailer in your mapping.")
     st.stop()
 
@@ -419,6 +428,6 @@ with c1:
         save_edit_week(conn, retailer, start, end, edit_week, edited)
         st.success("Saved.")
 with c2:
-    st.caption("Only the column for the selected edit week is editable. Sales stays at the far right.")
+    st.caption("Only the column for the selected edit week is editable. Sales stays at the far right. Use the checkbox above to hide SKUs with no units.")
 
 st.caption("v1: 2026 weeks only. Year selector can be added later.")
