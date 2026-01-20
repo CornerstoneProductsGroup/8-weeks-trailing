@@ -1,30 +1,30 @@
 # Weekly Retailer Report (Online)
 
-This Streamlit app replaces the Excel "8 weeks trailing" report with an online, persistent version.
+This Streamlit app replaces the Excel workflow with an online, persistent report.
 
-## What it does
-- Retailer selector (tabs/dropdown)
-- Week selector (2026 only in v1): `1-1 / 1-2`, then Monday–Friday week ranges
-- Upload your Vendor-SKU Map (columns: Retailer, SKU, Vendor)
-- Upload weekly retailer export workbook (like your example)
-- Auto-fills Units for that week
-- You manually enter Sales + Notes (autosaved to SQLite)
+## Key features
+- Retailer selector (from Vendor-SKU Map)
+- Multi-week view: weeks appear as column headers (e.g., `1-5 / 1-9`)
+- Retailer + SKU stay on the left
+- Unit Price comes from the Vendor-SKU Map (any column containing 'price')
+- Total $ is calculated: Units × Unit Price (read-only)
+- Sales is a single column on the far right (manual, optional)
+- Upload weekly export files to auto-fill Units for a chosen week
 
-## Run locally
+## Setup / Run
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Mapping
+The repo includes `Vendor-SKU Map.xlsx`. On first run, it loads automatically into the database.
+Upload a new map in the sidebar only if you want to replace it.
+
+## Notes on editing
+- You pick an **Edit Week**.
+- Only that week’s column is editable (units override).
+- Sales + Notes are always editable (and apply to the Edit Week).
+
 ## Data storage
-- Uses SQLite database file `app.db` in the same folder
-- Back it up by copying `app.db`
-
-## Notes
-- Import parsers are based on your provided weekly export layout:
-  - Depot / Lowe's: SKU col E, Qty col F (no headers)
-  - Depot SO: SKU col D, Qty col E
-  - Amazon: SKU col C, Units Sold for Period col N
-  - TSC: columns Vendor Style / Qty Ordered
-
-Year selector and multi-year support can be added later.
+SQLite database file: `app.db`

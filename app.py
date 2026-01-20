@@ -2,31 +2,30 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 from datetime import date, datetime, timedelta
-import re
 from openpyxl import load_workbook
 
-APP_TITLE = "Weekly Retailer Report (Units + Manual Sales)"
+APP_TITLE = "Weekly Retailer Report (Multi-week View)"
 DB_PATH = "app.db"
 
 # -----------------------------
 # Week selector (2026 only for now)
 # -----------------------------
 def weeks_2026():
-    labels = []
-    # Special first partial week
-    labels.append((date(2026,1,1), date(2026,1,2), "1-1 / 1-2"))
-    monday = date(2026,1,5)
-    for i in range(0, 60):  # more than enough, we'll stop once we cross 2026
+    rows = []
+    # Special partial week
+    rows.append((date(2026, 1, 1), date(2026, 1, 2), "1-1 / 1-2"))
+    monday = date(2026, 1, 5)
+    for i in range(0, 60):
         start = monday + timedelta(weeks=i)
         end = start + timedelta(days=4)
         if start.year != 2026:
             break
         if end.year != 2026:
-            end = date(2026,12,31)
-        labels.append((start, end, f"{start.month}-{start.day} / {end.month}-{end.day}"))
-        if end == date(2026,12,31):
+            end = date(2026, 12, 31)
+        rows.append((start, end, f"{start.month}-{start.day} / {end.month}-{end.day}"))
+        if end == date(2026, 12, 31):
             break
-    return labels
+    return rows
 
 # -----------------------------
 # DB helpers
@@ -43,6 +42,7 @@ def init_db(conn: sqlite3.Connection):
         retailer TEXT NOT NULL,
         vendor TEXT NOT NULL,
         sku TEXT NOT NULL,
+        unit_price REAL,
         active INTEGER NOT NULL DEFAULT 1,
         sort_order INTEGER,
         UNIQUE(retailer, sku)
@@ -65,35 +65,64 @@ def init_db(conn: sqlite3.Connection):
     CREATE INDEX IF NOT EXISTS idx_weekly_results_week_retailer
     ON weekly_results(week_start, retailer);
     """)
+    # In case an older DB exists, try to add unit_price (no-op if already present)
+    try:
+        conn.execute("ALTER TABLE sku_mapping ADD COLUMN unit_price REAL;")
+    except Exception:
+        pass
     conn.commit()
+
+def mapping_count(conn):
+    df = pd.read_sql_query("SELECT COUNT(*) AS n FROM sku_mapping", conn)
+    return int(df.loc[0, "n"]) if not df.empty else 0
 
 def upsert_mapping(conn, df: pd.DataFrame):
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
-    required = {"Retailer","SKU","Vendor"}
+
+    required = {"Retailer", "SKU", "Vendor"}
     if not required.issubset(set(df.columns)):
         raise ValueError(f"Mapping must contain columns: {sorted(required)}. Found: {list(df.columns)}")
 
-    df = df[["Retailer","SKU","Vendor"]].dropna()
+    price_col = next((c for c in df.columns if "price" in str(c).lower()), None)
+
+    df = df[list(required) + ([price_col] if price_col else [])].dropna(subset=["Retailer", "SKU", "Vendor"])
     df["Retailer"] = df["Retailer"].astype(str).str.strip()
     df["SKU"] = df["SKU"].astype(str).str.strip()
     df["Vendor"] = df["Vendor"].astype(str).str.strip()
 
-    # Replace mapping for retailers present in upload
+    if price_col:
+        # coerce to numeric
+        df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+
     retailers = sorted(df["Retailer"].unique().tolist())
     cur = conn.cursor()
     cur.executemany("DELETE FROM sku_mapping WHERE retailer = ?", [(r,) for r in retailers])
 
     rows = []
     for r in retailers:
-        sub = df[df["Retailer"]==r].reset_index(drop=True)
+        sub = df[df["Retailer"] == r].reset_index(drop=True)
         for i, row in sub.iterrows():
-            rows.append((row["Retailer"], row["Vendor"], row["SKU"], 1, i+1))
+            price = float(row[price_col]) if price_col and pd.notna(row[price_col]) else None
+            rows.append((row["Retailer"], row["Vendor"], row["SKU"], price, 1, i + 1))
+
     cur.executemany("""
-        INSERT INTO sku_mapping(retailer, vendor, sku, active, sort_order)
-        VALUES(?,?,?,?,?)
+        INSERT INTO sku_mapping(retailer, vendor, sku, unit_price, active, sort_order)
+        VALUES(?,?,?,?,?,?)
     """, rows)
     conn.commit()
+
+def bootstrap_default_mapping(conn):
+    if mapping_count(conn) > 0:
+        return False
+    for fn in ["Vendor-SKU Map.xlsx", "Vendor-SKU Map - example.xlsx"]:
+        try:
+            df_map = pd.read_excel(fn, sheet_name=0)
+            upsert_mapping(conn, df_map)
+            return True
+        except Exception:
+            continue
+    return False
 
 def get_retailers(conn):
     df = pd.read_sql_query("""
@@ -105,81 +134,22 @@ def get_retailers(conn):
 
 def get_mapping_for_retailer(conn, retailer: str):
     return pd.read_sql_query("""
-        SELECT vendor, sku, sort_order
+        SELECT vendor, sku, unit_price, sort_order
         FROM sku_mapping
         WHERE active = 1 AND retailer = ?
         ORDER BY COALESCE(sort_order, 999999), vendor, sku
     """, conn, params=(retailer,))
 
-def get_week_df(conn, retailer: str, week_start: date, week_end: date):
-    mapping = get_mapping_for_retailer(conn, retailer)
-    if mapping.empty:
-        return pd.DataFrame(columns=["Vendor","SKU","Units","Sales","Notes","_units_auto","_units_override"])
-
-    wk = pd.read_sql_query("""
-        SELECT sku,
-               units_auto,
-               units_override,
-               sales_manual,
-               notes
+def get_week_records(conn, retailer: str, week_starts: list[str]):
+    if not week_starts:
+        return pd.DataFrame(columns=["week_start","sku","units_auto","units_override","sales_manual","notes"])
+    placeholders = ",".join(["?"] * len(week_starts))
+    q = f"""
+        SELECT week_start, sku, units_auto, units_override, sales_manual, notes
         FROM weekly_results
-        WHERE retailer = ? AND week_start = ?
-    """, conn, params=(retailer, week_start.isoformat()))
-
-    out = mapping.merge(wk, how="left", left_on="sku", right_on="sku")
-    out.rename(columns={"vendor":"Vendor","sku":"SKU"}, inplace=True)
-
-    out["_units_auto"] = out["units_auto"]
-    out["_units_override"] = out["units_override"]
-
-    # Display Units = override if present else auto
-    out["Units"] = out["units_override"].where(out["units_override"].notna(), out["units_auto"])
-    out["Sales"] = out["sales_manual"]
-    out["Notes"] = out["notes"]
-
-    # Keep only display columns plus hidden helper columns
-    out = out[["Vendor","SKU","Units","Sales","Notes","_units_auto","_units_override"]]
-    return out
-
-def save_week_edits(conn, retailer: str, week_start: date, week_end: date, edited_df: pd.DataFrame):
-    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    cur = conn.cursor()
-
-    for _, row in edited_df.iterrows():
-        sku = str(row["SKU"]).strip()
-        units = row.get("Units")
-        sales = row.get("Sales")
-        notes = row.get("Notes")
-
-        # units_override: if user typed a value different than units_auto or if units_auto is null
-        units_auto = row.get("_units_auto")
-        if pd.isna(units):
-            units_override = None
-        else:
-            # store as override if it differs from auto OR auto is missing
-            if pd.isna(units_auto) or (not pd.isna(units_auto) and float(units) != float(units_auto)):
-                units_override = float(units)
-            else:
-                units_override = None  # same as auto -> clear override
-
-        sales_manual = None if pd.isna(sales) else float(sales)
-        notes_txt = None if (notes is None or (isinstance(notes,float) and pd.isna(notes)) or str(notes).strip()=="") else str(notes)
-
-        cur.execute("""
-            INSERT INTO weekly_results(week_start, week_end, retailer, sku,
-                                      units_auto, units_override, sales_manual, notes, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(week_start, retailer, sku) DO UPDATE SET
-                week_end=excluded.week_end,
-                units_override=excluded.units_override,
-                sales_manual=excluded.sales_manual,
-                notes=excluded.notes,
-                updated_at=excluded.updated_at
-        """, (
-            week_start.isoformat(), week_end.isoformat(), retailer, sku,
-            None, units_override, sales_manual, notes_txt, now
-        ))
-    conn.commit()
+        WHERE retailer = ? AND week_start IN ({placeholders})
+    """
+    return pd.read_sql_query(q, conn, params=[retailer] + week_starts)
 
 def set_units_auto_from_upload(conn, week_start: date, week_end: date, retailer: str, units_by_sku: dict):
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -204,32 +174,14 @@ def set_units_auto_from_upload(conn, week_start: date, week_end: date, retailer:
         ))
     conn.commit()
 
-def weeks_with_data(conn, retailer: str):
-    df = pd.read_sql_query("""
-        SELECT DISTINCT week_start FROM weekly_results
-        WHERE retailer = ?
-        ORDER BY week_start
-    """, conn, params=(retailer,))
-    return set(df["week_start"].tolist())
-
 # -----------------------------
-# Upload parser for the weekly export workbook
-# (based on your example format)
+# Upload parser (based on your example workbook)
 # -----------------------------
-def parse_weekly_workbook(file_path_or_bytes, sheet_name: str):
-    """
-    Returns dict: sku -> units
-    Supported:
-      - "Depot" and "Lowe's": data rows with SKU in col E, units in col F
-      - "Depot SO": SKU in col D, units in col E
-      - "Amazon": SKU in col C, units in col N (row 1 has labels)
-      - "TSC": header row with "Vendor Style" and "Qty Ordered" in A1/B1; data down the sheet with blanks between
-    """
-    wb = load_workbook(file_path_or_bytes, data_only=True)
+def parse_weekly_workbook(file, sheet_name: str):
+    wb = load_workbook(file, data_only=True)
     if sheet_name not in wb.sheetnames:
         return {}
     ws = wb[sheet_name]
-
     out = {}
 
     def add(sku, qty):
@@ -242,44 +194,132 @@ def parse_weekly_workbook(file_path_or_bytes, sheet_name: str):
             q = float(qty)
         except Exception:
             return
-        if sku not in out:
-            out[sku] = 0.0
-        out[sku] += q
+        out[sku] = out.get(sku, 0.0) + q
 
     if sheet_name in ("Depot", "Lowe's"):
-        for r in range(1, ws.max_row+1):
-            sku = ws.cell(r, 5).value  # E
-            qty = ws.cell(r, 6).value  # F
-            add(sku, qty)
+        for r in range(1, ws.max_row + 1):
+            add(ws.cell(r, 5).value, ws.cell(r, 6).value)  # E, F
 
     elif sheet_name == "Depot SO":
-        for r in range(1, ws.max_row+1):
-            sku = ws.cell(r, 4).value  # D
-            qty = ws.cell(r, 5).value  # E
-            add(sku, qty)
+        for r in range(1, ws.max_row + 1):
+            add(ws.cell(r, 4).value, ws.cell(r, 5).value)  # D, E
 
     elif sheet_name == "Amazon":
-        for r in range(1, ws.max_row+1):
-            sku = ws.cell(r, 3).value   # C
-            qty = ws.cell(r, 14).value  # N
-            add(sku, qty)
+        for r in range(1, ws.max_row + 1):
+            add(ws.cell(r, 3).value, ws.cell(r, 14).value)  # C, N
 
     elif sheet_name == "TSC":
-        # Find header row (usually row 1)
         header_row = None
-        for r in range(1, min(ws.max_row, 10)+1):
-            a = ws.cell(r,1).value
-            b = ws.cell(r,2).value
+        for r in range(1, min(ws.max_row, 10) + 1):
+            a = ws.cell(r, 1).value
+            b = ws.cell(r, 2).value
             if isinstance(a, str) and isinstance(b, str) and "Vendor" in a and "Qty" in b:
                 header_row = r
                 break
         start = (header_row + 1) if header_row else 2
-        for r in range(start, ws.max_row+1):
-            sku = ws.cell(r,1).value
-            qty = ws.cell(r,2).value
-            add(sku, qty)
+        for r in range(start, ws.max_row + 1):
+            add(ws.cell(r, 1).value, ws.cell(r, 2).value)
 
     return {k: v for k, v in out.items() if v != 0}
+
+# -----------------------------
+# Build multi-week view dataframe
+# -----------------------------
+def build_multiweek_df(conn, retailer: str, week_meta: list[tuple[date,date,str]], display_labels: list[str], edit_label: str):
+    mapping = get_mapping_for_retailer(conn, retailer)
+    if mapping.empty:
+        return pd.DataFrame()
+
+    label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
+    starts = [label_to_start[lbl] for lbl in display_labels if lbl in label_to_start]
+    wk = get_week_records(conn, retailer, starts)
+
+    # resolved units per (week_start, sku)
+    if not wk.empty:
+        wk["UnitsResolved"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
+    else:
+        wk = pd.DataFrame(columns=["week_start","sku","UnitsResolved","sales_manual","notes"])
+
+    base = mapping.rename(columns={"vendor":"Vendor","sku":"SKU","unit_price":"Unit Price"}).copy()
+    base["Unit Price"] = pd.to_numeric(base["Unit Price"], errors="coerce")
+
+    # Add per-week columns
+    for lbl in display_labels:
+        ws = label_to_start.get(lbl)
+        if not ws:
+            base[lbl] = pd.NA
+            continue
+        sub = wk[wk["week_start"] == ws][["sku","UnitsResolved"]].rename(columns={"sku":"SKU", "UnitsResolved": lbl})
+        base = base.merge(sub, on="SKU", how="left")
+
+    # Add Sales/Notes for edit week only (far right)
+    edit_start = label_to_start.get(edit_label)
+    if edit_start and not wk.empty:
+        sub2 = wk[wk["week_start"] == edit_start][["sku","sales_manual","notes"]].rename(columns={"sku":"SKU"})
+        base = base.merge(sub2, on="SKU", how="left")
+    else:
+        base["sales_manual"] = pd.NA
+        base["notes"] = pd.NA
+
+    base.rename(columns={"sales_manual":"Sales", "notes":"Notes"}, inplace=True)
+
+    # Total $ across displayed weeks (calculated, read-only)
+    # Sum units across displayed labels * unit price per row
+    units_sum = None
+    for lbl in display_labels:
+        col = pd.to_numeric(base[lbl], errors="coerce")
+        units_sum = col if units_sum is None else units_sum.add(col, fill_value=0)
+    base["Total $ (Units x Price)"] = (units_sum * base["Unit Price"]).where(base["Unit Price"].notna(), pd.NA)
+
+    # Reorder columns: Vendor, SKU, Unit Price, week cols..., Total$, Sales, Notes
+    cols = ["Vendor","SKU","Unit Price"] + display_labels + ["Total $ (Units x Price)","Sales","Notes"]
+    return base[cols]
+
+def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_label: str, edited_df: pd.DataFrame):
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    cur = conn.cursor()
+
+    # The editable units are in the column named edit_label.
+    for _, row in edited_df.iterrows():
+        sku = str(row["SKU"]).strip()
+        units_val = row.get(edit_label)
+        sales_val = row.get("Sales")
+        notes_val = row.get("Notes")
+
+        # Units override stored as the edited value (can be blank to clear)
+        units_override = None
+        if units_val is not None and not (isinstance(units_val, float) and pd.isna(units_val)):
+            try:
+                units_override = float(units_val)
+            except Exception:
+                units_override = None
+
+        sales_manual = None
+        if sales_val is not None and not (isinstance(sales_val, float) and pd.isna(sales_val)):
+            try:
+                sales_manual = float(sales_val)
+            except Exception:
+                sales_manual = None
+
+        notes_txt = None
+        if notes_val is not None and not (isinstance(notes_val, float) and pd.isna(notes_val)) and str(notes_val).strip() != "":
+            notes_txt = str(notes_val)
+
+        cur.execute("""
+            INSERT INTO weekly_results(week_start, week_end, retailer, sku,
+                                      units_auto, units_override, sales_manual, notes, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(week_start, retailer, sku) DO UPDATE SET
+                week_end=excluded.week_end,
+                units_override=excluded.units_override,
+                sales_manual=excluded.sales_manual,
+                notes=excluded.notes,
+                updated_at=excluded.updated_at
+        """, (
+            week_start.isoformat(), week_end.isoformat(), retailer, sku,
+            None, units_override, sales_manual, notes_txt, now
+        ))
+    conn.commit()
 
 # -----------------------------
 # UI
@@ -289,11 +329,12 @@ st.title(APP_TITLE)
 
 conn = get_conn()
 init_db(conn)
+bootstrap_default_mapping(conn)
 
 with st.sidebar:
-    st.header("Setup")
-    st.caption("Upload your Vendor-SKU Map once. After that, just upload weekly retailer exports and enter sales.")
-    map_file = st.file_uploader("Upload Vendor-SKU Map (.xlsx)", type=["xlsx"])
+    st.header("Setup (optional)")
+    st.caption("Mapping is bundled. Only upload if you want to replace it.")
+    map_file = st.file_uploader("Upload Vendor-SKU Map (.xlsx) (optional)", type=["xlsx"])
     if map_file is not None:
         try:
             df_map = pd.read_excel(map_file, sheet_name=0)
@@ -304,135 +345,80 @@ with st.sidebar:
 
 retailers = get_retailers(conn)
 if not retailers:
-    st.info("Upload your Vendor-SKU Map to begin. It must include columns: Retailer, SKU, Vendor.")
+    st.info("No mapping loaded. Ensure 'Vendor-SKU Map.xlsx' is present or upload one in the sidebar.")
     st.stop()
 
-# Retailer selection
 retailer = st.selectbox("Retailer", retailers)
 
-# Week selection
-week_rows = weeks_2026()
-if not week_rows:
-    st.error('No weeks generated.'); st.stop()
-week_labels = [w[2] for w in week_rows]
-week_label = st.selectbox("Week", week_labels, index=0)
+week_meta = weeks_2026()
+labels = [w[2] for w in week_meta]
 
-sel = [t for t in week_rows if t[2] == week_label]
-if not sel:
-    # Fallback to first week if something went odd
-    week_start, week_end, _ = week_rows[0]
-else:
-    week_start, week_end, _ = sel[0]
+# Multi-week display selector + edit week
+default_display = labels[:9]  # partial + first 8 full weeks
+display_weeks = st.multiselect("Weeks to display (columns)", labels, default=default_display)
 
-# show data badge + filter
-existing = weeks_with_data(conn, retailer)
-colA, colB, colC = st.columns([1,1,2])
-with colA:
-    st.write(f"**Week Start:** {week_start.isoformat()}")
-with colB:
-    st.write(f"**Week End:** {week_end.isoformat()}")
-with colC:
-    st.write("✅ **Data exists**" if week_start.isoformat() in existing else "⬜ **Empty week**")
+edit_week = st.selectbox("Week to edit (units override + sales)", labels, index=0)
 
-st.divider()
+# Keep edit week included in display
+if edit_week not in display_weeks:
+    display_weeks = display_weeks + [edit_week]
 
-# Upload weekly export file (optional)
-st.subheader("1) Upload weekly retailer export (optional)")
+# Upload weekly export
+st.subheader("Upload weekly retailer export (optional)")
 up = st.file_uploader("Upload weekly export workbook (.xlsx)", type=["xlsx"], key="weekly_upload")
-parse_hint = {
-    "Depot": "Sheet 'Depot' – SKU col E, Qty col F",
-    "Lowe's": "Sheet \"Lowe's\" – SKU col E, Qty col F",
-    "Depot SO": "Sheet 'Depot SO' – SKU col D, Qty col E",
-    "Amazon": "Sheet 'Amazon' – SKU col C, Units col N",
-    "TSC": "Sheet 'TSC' – columns 'Vendor Style' and 'Qty Ordered'"
-}
-st.caption("Supported formats (based on your example workbook): " + " | ".join([f"{k}" for k in parse_hint.keys()]))
+st.caption("This fills Units (auto) for the chosen edit week. You can repeat uploads week-by-week.")
 
 if up is not None:
-    # Decide which sheet to parse based on retailer name heuristics
-    sheet_map = {
-        "Depot": "Depot",
-        "The Home Depot": "Depot",
-        "Home Depot": "Depot",
-        "Depot SO": "Depot SO",
-        "Lowe's": "Lowe's",
-        "Lowes": "Lowe's",
-        "Amazon": "Amazon",
-        "TSC": "TSC",
-        "Tractor Supply": "TSC"
-    }
-    # match by contains
-    chosen_sheet = None
-    for k, v in sheet_map.items():
-        if k.lower() in retailer.lower():
-            chosen_sheet = v
-            break
-    # if retailer is literally "Depot" etc, this will work; else allow manual sheet pick
+    # Choose which sheet to parse
     try:
-        wb = load_workbook(up, read_only=True, data_only=True)
-        sheets = wb.sheetnames
+        wb_ro = load_workbook(up, read_only=True, data_only=True)
+        sheets = wb_ro.sheetnames
     except Exception:
         sheets = []
-
-    if chosen_sheet is None or chosen_sheet not in sheets:
-        chosen_sheet = st.selectbox("Select which sheet in the upload contains this retailer's data", sheets)
-
-    if chosen_sheet:
-        units = parse_weekly_workbook(up, chosen_sheet)
-        if units:
-            set_units_auto_from_upload(conn, week_start, week_end, retailer, units)
-            st.success(f"Loaded units for {len(units)} SKUs from '{chosen_sheet}' into {retailer} for {week_label}.")
-        else:
-            st.warning(f"No units found to import from '{chosen_sheet}'. (Format might differ.)")
+    if sheets:
+        chosen_sheet = st.selectbox("Which sheet contains this retailer's data?", sheets)
+        if st.button("Import Units for the edit week", type="primary"):
+            units = parse_weekly_workbook(up, chosen_sheet)
+            if units:
+                # map edit_week -> dates
+                start, end, _ = next((a,b,l) for a,b,l in week_meta if l == edit_week)
+                set_units_auto_from_upload(conn, start, end, retailer, units)
+                st.success(f"Imported units for {len(units)} SKUs into {retailer} for week {edit_week}.")
+            else:
+                st.warning("No units found to import (format may differ).")
+    else:
+        st.warning("Couldn't read sheets from the uploaded file.")
 
 st.divider()
 
-# Editable table
-st.subheader("2) Enter Sales (and optionally override Units)")
-df = get_week_df(conn, retailer, week_start, week_end)
-
+# Build and render table
+df = build_multiweek_df(conn, retailer, week_meta, display_weeks, edit_week)
 if df.empty:
-    st.info("No rows for this retailer. Check your Vendor-SKU Map.")
+    st.info("No rows for this retailer in your mapping.")
     st.stop()
 
-# Data editor: lock Vendor & SKU, allow Units/Sales/Notes
+# Disable columns: Vendor, SKU, Unit Price, non-edit weeks, Total$
+disabled_cols = ["Vendor","SKU","Unit Price","Total $ (Units x Price)"] + [w for w in display_weeks if w != edit_week]
+# Sales is far right (editable), Notes editable
 edited = st.data_editor(
     df,
     use_container_width=True,
     hide_index=True,
-    disabled=["Vendor","SKU","_units_auto","_units_override"],
-    column_config={
-        "Units": st.column_config.NumberColumn(help="Auto-filled from upload. You can type a number to override.", format="%.0f"),
-        "Sales": st.column_config.NumberColumn(help="Manual sales for the week (dollars).", format="%.2f"),
-        "Notes": st.column_config.TextColumn(help="Optional notes.")
-    }
+    disabled=disabled_cols,
+    column_config={**{w: st.column_config.NumberColumn(format="%.0f") for w in display_weeks},
+                  "Unit Price": st.column_config.NumberColumn(format="%.2f"),
+                  "Total $ (Units x Price)": st.column_config.NumberColumn(format="%.2f"),
+                  "Sales": st.column_config.NumberColumn(help="Manual sales for the edit week (optional).", format="%.2f"),
+                  "Notes": st.column_config.TextColumn()}
 )
 
-save_col1, save_col2 = st.columns([1,3])
-with save_col1:
+c1, c2 = st.columns([1,3])
+with c1:
     if st.button("Save edits", type="primary"):
-        save_week_edits(conn, retailer, week_start, week_end, edited)
+        start, end, _ = next((a,b,l) for a,b,l in week_meta if l == edit_week)
+        save_edit_week(conn, retailer, start, end, edit_week, edited)
         st.success("Saved.")
-with save_col2:
-    st.caption("Tip: You can paste a column of Sales values directly into the table. Units will keep auto values unless you change them.")
+with c2:
+    st.caption("Only the column for the selected edit week is editable. Sales stays at the far right.")
 
-# Unmapped SKUs report (from upload vs mapping) – shown if there is uploaded auto data not in mapping
-st.divider()
-st.subheader("Unmapped SKU check")
-mapped = set(get_mapping_for_retailer(conn, retailer)["sku"].astype(str).tolist())
-auto = pd.read_sql_query("""
-    SELECT sku, units_auto FROM weekly_results
-    WHERE retailer=? AND week_start=? AND units_auto IS NOT NULL
-""", conn, params=(retailer, week_start.isoformat()))
-if auto.empty:
-    st.caption("No imported auto-units for this week (or none for this retailer).")
-else:
-    auto_skus = set(auto["sku"].astype(str).tolist())
-    missing = sorted(list(auto_skus - mapped))
-    if missing:
-        st.warning(f"{len(missing)} SKU(s) found in upload but missing from mapping (so they won't show in the main table). Add them to the Vendor-SKU Map and re-upload it.")
-        st.dataframe(pd.DataFrame({"Missing SKU": missing}))
-    else:
-        st.success("All imported SKUs are present in your mapping.")
-
-st.caption("v1: 2026 weeks only (year selector can be added later).")
+st.caption("v1: 2026 weeks only. Year selector can be added later.")
