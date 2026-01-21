@@ -530,6 +530,30 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
+
+# compact grid
+st.markdown(
+    """
+    <style>
+      /* compact grid */
+      div[data-testid="stDataFrame"] thead tr th, 
+      div[data-testid="stDataFrame"] tbody tr td {
+        padding-top: 0.15rem !important;
+        padding-bottom: 0.15rem !important;
+        padding-left: 0.35rem !important;
+        padding-right: 0.35rem !important;
+        white-space: nowrap !important;
+      }
+      /* allow table to size to content */
+      div[data-testid="stDataFrame"] [role="grid"] {
+        width: max-content !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
 # Light padding so the table fits more rows
 st.markdown(
     """
@@ -711,7 +735,7 @@ with tab_report:
 
         st.dataframe(
             styled,
-            use_container_width=True,
+            use_container_width=False,
             height=900,
             column_config={
             **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
@@ -726,7 +750,7 @@ with tab_report:
         edited = st.data_editor(
             df,
             height=900,
-            use_container_width=True,
+            use_container_width=False,
             hide_index=True,
             disabled=disabled_cols,
             column_config={
@@ -771,7 +795,7 @@ with tab_report:
         tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
     st.dataframe(
         tot_df,
-        use_container_width=True,
+        use_container_width=False,
         column_config={
             **{c: st.column_config.NumberColumn(format="%.0f", width="small") for c in tot_df.columns if "Units" in c},
             **{c: st.column_config.NumberColumn(format="$%,.2f", width="small") for c in tot_df.columns if "$" in c},
