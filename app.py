@@ -624,7 +624,7 @@ with st.sidebar:
 # -----------------------------
 # Main tabs
 # -----------------------------
-tab_report, tab_top_retailer, tab_top_vendor, tab_total_sku = st.tabs(["Report", "Top 10 by Retailer", "Top SKU by Vendor", "Total $ per SKU"])
+tab_report, tab_summary, tab_top_retailer, tab_top_vendor, tab_total_sku = st.tabs(["Report", "Summary", "Top 10 by Retailer", "Top SKU by Vendor", "Total $ per SKU"])
 
 with tab_report:
     st.markdown(f"**Retailer:** {retailer}  |  **Edit week:** {edit_week}  |  **Weeks shown:** {', '.join(display_weeks)}")
@@ -704,6 +704,91 @@ with tab_report:
             tot_df_display[c] = tot_df_display[c].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
     st.dataframe(tot_df_display, use_container_width=True)
 
+with tab_summary:
+    st.subheader("Summary by retailer and week")
+    st.caption("Shows total units and total $ for each retailer for the weeks you selected in the sidebar. Totals match the Report tab totals logic, but include ALL SKUs.")
+
+    label_to_start = {lbl: start.isoformat() for lbl, start in [(l, s) for s, _, l in week_meta]}
+    # keep only selected labels that exist
+    selected_labels = [lbl for lbl in display_weeks if lbl in label_to_start]
+    selected_starts = [label_to_start[lbl] for lbl in selected_labels]
+
+    if not selected_labels:
+        st.info("Select at least one week in the sidebar to build the summary.")
+    else:
+        mapping_all = pd.read_sql_query(
+            """
+            SELECT retailer, sku, unit_price
+            FROM sku_mapping
+            WHERE active = 1
+            """,
+            conn
+        )
+        mapping_all["unit_price"] = pd.to_numeric(mapping_all["unit_price"], errors="coerce").fillna(0)
+
+        placeholders = ",".join(["?"] * len(selected_starts))
+        wk = pd.read_sql_query(
+            f"""
+            SELECT week_start, retailer, sku, units_auto, units_override
+            FROM weekly_results
+            WHERE week_start IN ({placeholders})
+            """,
+            conn,
+            params=selected_starts
+        )
+
+        if wk.empty:
+            st.info("No unit data found for the selected weeks yet.")
+        else:
+            wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
+            wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
+
+            dfm = wk.merge(mapping_all, on=["retailer", "sku"], how="left")
+            dfm["unit_price"] = pd.to_numeric(dfm["unit_price"], errors="coerce").fillna(0)
+            dfm["Dollars"] = dfm["Units"] * dfm["unit_price"]
+
+            agg = dfm.groupby(["retailer", "week_start"], as_index=False).agg(
+                total_units=("Units", "sum"),
+                total_dollars=("Dollars", "sum"),
+            )
+
+            all_retailers = sorted(dfm["retailer"].unique().tolist())
+            out = pd.DataFrame({"Retailer": all_retailers}).set_index("Retailer")
+
+            for lbl in selected_labels:
+                ws = label_to_start[lbl]
+                sub = agg[agg["week_start"] == ws].set_index("retailer")
+                out[f"{lbl} Units"] = sub["total_units"]
+                out[f"{lbl} $"] = sub["total_dollars"]
+
+            out = out.fillna(0)
+
+            col_cfg = {}
+            for lbl in selected_labels:
+                col_cfg[f"{lbl} Units"] = st.column_config.NumberColumn(format="%.0f")
+                col_cfg[f"{lbl} $"] = st.column_config.NumberColumn(format="$%,.2f")
+
+            st.dataframe(out, use_container_width=True, column_config=col_cfg)
+
+            st.divider()
+            st.subheader("Totals across selected weeks")
+
+            unit_cols = [c for c in out.columns if c.endswith(" Units")]
+            dol_cols = [c for c in out.columns if c.endswith(" $")]
+
+            totals = pd.DataFrame({
+                "Total Units (Selected Weeks)": out[unit_cols].sum(axis=1),
+                "Total $ (Selected Weeks)": out[dol_cols].sum(axis=1),
+            }).sort_values("Total $ (Selected Weeks)", ascending=False)
+
+            st.dataframe(
+                totals,
+                use_container_width=True,
+                column_config={
+                    "Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f"),
+                    "Total $ (Selected Weeks)": st.column_config.NumberColumn(format="$%,.2f"),
+                }
+            )
 with tab_top_retailer:
     st.subheader("Top 10 items per retailer (by Units)")
     st.caption("Uses the weeks selected in 'Weeks to display'. Totals are summed across those weeks.")
