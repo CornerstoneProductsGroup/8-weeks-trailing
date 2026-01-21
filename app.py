@@ -438,7 +438,15 @@ def build_multiweek_df(conn, retailer: str, week_meta: list[tuple[date,date,str]
     for lbl in display_labels:
         col = pd.to_numeric(base[lbl], errors="coerce")
         units_sum = col if units_sum is None else units_sum.add(col, fill_value=0)
-    base["Total $ (Units x Price)"] = (units_sum * base["Unit Price"]).where(base["Unit Price"].notna(), pd.NA)
+        # Total $ is the Δ $ between the last two displayed weeks: (last - prev) × Unit Price
+    if len(display_labels) >= 2:
+        prev_lbl = display_labels[-2]
+        last_lbl = display_labels[-1]
+        prev_u = pd.to_numeric(base[prev_lbl], errors="coerce").fillna(0)
+        last_u = pd.to_numeric(base[last_lbl], errors="coerce").fillna(0)
+        base["Total $ (Units x Price)"] = ((last_u - prev_u) * base["Unit Price"].fillna(0)).where(base["Unit Price"].notna(), pd.NA)
+    else:
+        base["Total $ (Units x Price)"] = pd.NA
     # Δ Units between the last two displayed weeks (per SKU)
     if len(display_labels) >= 2:
         prev_lbl = display_labels[-2]
@@ -616,7 +624,7 @@ with st.sidebar:
 # -----------------------------
 # Main tabs
 # -----------------------------
-tab_report, tab_top_retailer, tab_top_vendor = st.tabs(["Report", "Top 5 by Retailer", "Top 5 by Vendor"])
+tab_report, tab_top_retailer, tab_top_vendor, tab_total_sku = st.tabs(["Report", "Top 10 by Retailer", "Top SKU by Vendor", "Total $ per SKU"])
 
 with tab_report:
     st.markdown(f"**Retailer:** {retailer}  |  **Edit week:** {edit_week}  |  **Weeks shown:** {', '.join(display_weeks)}")
@@ -697,7 +705,7 @@ with tab_report:
     st.dataframe(tot_df_display, use_container_width=True)
 
 with tab_top_retailer:
-    st.subheader("Top 5 items per retailer (by Units)")
+    st.subheader("Top 10 items per retailer (by Units)")
     st.caption("Uses the weeks selected in 'Weeks to display'. Totals are summed across those weeks.")
 
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
@@ -739,7 +747,7 @@ with tab_top_retailer:
             for ret in sorted(dfm["retailer"].unique().tolist()):
                 st.markdown(f"### {ret}")
                 sub = dfm[dfm["retailer"] == ret].copy()
-                top = sub.sort_values("Units", ascending=False).head(5)
+                top = sub.sort_values("Units", ascending=False).head(10)
 
                 out = top.rename(columns={
                     "vendor": "Vendor",
@@ -749,7 +757,7 @@ with tab_top_retailer:
                 st.dataframe(out, use_container_width=True)
 
 with tab_top_vendor:
-    st.subheader("Top 5 items per vendor, per retailer (by Units)")
+    st.subheader("Top SKU per vendor, per retailer (by Units)")
     st.caption("Uses the weeks selected in 'Weeks to display'. Totals are summed across those weeks.")
 
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
@@ -797,7 +805,7 @@ with tab_top_vendor:
                     if subv.empty:
                         continue
 
-                    top = subv.sort_values("Units", ascending=False).head(5)
+                    top = subv.sort_values("Units", ascending=False).head(1)
 
                     out = top.rename(columns={
                         "sku": "SKU",
@@ -806,3 +814,67 @@ with tab_top_vendor:
 
                     st.write(f"**{vend}**")
                     st.dataframe(out, use_container_width=True)
+with tab_total_sku:
+    st.subheader("Total $ per SKU (selected weeks)")
+    st.caption("Totals are summed across the weeks you selected in the sidebar. This uses Unit Price from the vendor map.")
+
+    label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
+    selected_starts = [label_to_start[lbl] for lbl in display_weeks if lbl in label_to_start]
+
+    if not selected_starts:
+        st.info("Select at least one week to compute totals.")
+    else:
+        placeholders = ",".join(["?"] * len(selected_starts))
+        wk = pd.read_sql_query(
+            f"""
+            SELECT week_start, retailer, sku, units_auto, units_override
+            FROM weekly_results
+            WHERE week_start IN ({placeholders})
+            """,
+            conn,
+            params=selected_starts
+        )
+
+        if wk.empty:
+            st.info("No unit data found for the selected weeks yet.")
+        else:
+            wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
+            wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
+
+            agg = wk.groupby(["retailer", "sku"], as_index=False)["Units"].sum()
+
+            mapping_all = pd.read_sql_query(
+                """
+                SELECT retailer, vendor, sku, unit_price
+                FROM sku_mapping
+                WHERE active = 1
+                """,
+                conn
+            )
+            dfm = agg.merge(mapping_all, on=["retailer", "sku"], how="left")
+            dfm["vendor"] = dfm["vendor"].fillna("Unknown")
+            dfm["unit_price"] = pd.to_numeric(dfm["unit_price"], errors="coerce").fillna(0)
+            dfm["Total $"] = dfm["Units"] * dfm["unit_price"]
+
+            for ret in sorted(dfm["retailer"].unique().tolist()):
+                st.markdown(f"### {ret}")
+                sub = dfm[dfm["retailer"] == ret].copy()
+                sub = sub.sort_values("Total $", ascending=False)
+
+                out = sub.rename(columns={
+                    "sku": "SKU",
+                    "vendor": "Vendor",
+                    "Units": "Total Units",
+                    "unit_price": "Unit Price",
+                    "Total $": "Total $"
+                })[["SKU", "Vendor", "Total Units", "Unit Price", "Total $"]]
+
+                st.dataframe(
+                    out,
+                    use_container_width=True,
+                    column_config={
+                        "Unit Price": st.column_config.NumberColumn(format="$%,.2f"),
+                        "Total $": st.column_config.NumberColumn(format="$%,.2f"),
+                        "Total Units": st.column_config.NumberColumn(format="%.0f"),
+                    }
+                )
