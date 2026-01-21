@@ -727,6 +727,11 @@ with tab_report:
             return ""
 
         styled = view_df.style
+
+    # Currency formatting (Streamlit ignores column_config formats for Styler)
+    if "Total $ (Units x Price)" in view_df.columns:
+        styled = styled.format({"Total $ (Units x Price)": "${:,.2f}"})
+
         if color_deltas:
             if "Δ Units (Last - Prev)" in view_df.columns:
                 styled = styled.applymap(_color_pos_neg, subset=["Δ Units (Last - Prev)"])
