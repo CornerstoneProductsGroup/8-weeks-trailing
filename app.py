@@ -102,6 +102,18 @@ def weeks_2026():
             break
     return rows
 
+
+MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+def weeks_for_months(week_meta, months_selected):
+    if not months_selected:
+        return []
+    labels = []
+    for start, _, lbl in week_meta:
+        if start.month in months_selected:
+            labels.append(lbl)
+    return labels
+
 # -----------------------------
 # DB helpers
 # -----------------------------
@@ -578,8 +590,27 @@ with st.sidebar:
     if isinstance(saved_display, list):
         default_display = [w for w in labels if w in saved_display] or default_display
 
-    display_weeks = st.multiselect("Weeks to display", labels, default=default_display, key="display_weeks_sidebar")
-    display_weeks = [lbl for lbl in labels if lbl in display_weeks]  # keep chronological order
+    selection_mode = st.radio("Select by", ["Weeks", "Months", "Both"], index=0 if saved.get("selection_mode") is None else ["Weeks","Months","Both"].index(saved.get("selection_mode")), horizontal=True)
+
+    saved_months = saved.get("months") if isinstance(saved.get("months"), list) else []
+    month_labels = [MONTH_NAMES[m-1] for m in range(1, 13)]
+    month_label_to_num = {MONTH_NAMES[m-1]: m for m in range(1, 13)}
+    default_month_labels = [MONTH_NAMES[m-1] for m in saved_months if 1 <= m <= 12]
+    month_sel_labels = st.multiselect("Months", month_labels, default=default_month_labels, key="months_sidebar")
+    months_selected = [month_label_to_num[x] for x in month_sel_labels]
+
+    display_weeks_manual = st.multiselect("Weeks to display", labels, default=default_display, key="display_weeks_sidebar")
+    display_weeks_manual = [lbl for lbl in labels if lbl in display_weeks_manual]  # chronological
+
+    display_weeks_by_month = weeks_for_months(week_meta, months_selected)
+    display_weeks_by_month = [lbl for lbl in labels if lbl in display_weeks_by_month]  # chronological
+
+    if selection_mode == "Weeks":
+        display_weeks = display_weeks_manual
+    elif selection_mode == "Months":
+        display_weeks = display_weeks_by_month
+    else:
+        display_weeks = [lbl for lbl in labels if (lbl in set(display_weeks_manual) or lbl in set(display_weeks_by_month))]
 
     edit_index = labels.index(saved_edit) if (saved_edit in labels) else 0
     edit_week = st.selectbox("Week to edit", labels, index=edit_index, key="edit_week_sidebar")
@@ -588,7 +619,7 @@ with st.sidebar:
         display_weeks = display_weeks + [edit_week]
 
     # Persist selections every run
-    set_ui_state(conn, state_key, {"display_weeks": display_weeks, "edit_week": edit_week})
+    set_ui_state(conn, state_key, {"display_weeks": display_weeks, "edit_week": edit_week, "months": months_selected, "selection_mode": selection_mode})
 
     st.divider()
     st.subheader("Upload units (APP workbook)")
@@ -654,17 +685,58 @@ with tab_report:
     # Disable columns: keep Vendor/SKU and non-edit weeks read-only
     disabled_cols = ["Vendor", "SKU", "Total $ (Units x Price)", "Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
 
-    edited = st.data_editor(
-        df,
-        height=900,
-        use_container_width=True,
-        hide_index=True,
-        disabled=disabled_cols,
-        column_config={
-            **{w: st.column_config.NumberColumn(format="%.0f") for w in display_weeks},
-            "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f"),            "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f"),
-        }
-    )
+    edit_mode = st.toggle("Edit mode", value=True)
+    color_deltas = st.toggle("Color positive/negative deltas", value=True)
+
+    if not edit_mode:
+        view_df = df.copy()
+
+        def _color_pos_neg(val):
+            try:
+                v = float(val)
+            except Exception:
+                return ""
+            if v > 0:
+                return "color: #1f8b4c; font-weight: 600;"
+            if v < 0:
+                return "color: #c92a2a; font-weight: 600;"
+            return ""
+
+        styled = view_df.style
+        if color_deltas:
+            if "Δ Units (Last - Prev)" in view_df.columns:
+                styled = styled.applymap(_color_pos_neg, subset=["Δ Units (Last - Prev)"])
+            if "Total $ (Units x Price)" in view_df.columns:
+                styled = styled.applymap(_color_pos_neg, subset=["Total $ (Units x Price)"])
+
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            height=900,
+            column_config={
+            **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
+                "Vendor": st.column_config.TextColumn(width="medium"),
+                "SKU": st.column_config.TextColumn(width="medium"),
+                "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f", width="small"),
+                "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
+            },
+        )
+        edited = view_df
+    else:
+        edited = st.data_editor(
+            df,
+            height=900,
+            use_container_width=True,
+            hide_index=True,
+            disabled=disabled_cols,
+            column_config={
+            **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
+                "Vendor": st.column_config.TextColumn(width="medium"),
+                "SKU": st.column_config.TextColumn(width="medium"),
+                "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f", width="small"),
+                "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
+            }
+        )
 
     c1, c2 = st.columns([1, 3])
     with c1:
@@ -697,12 +769,14 @@ with tab_report:
     else:
         tot_df["Δ Units (Last - Prev)"] = [pd.NA, pd.NA]
         tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
-    # Format totals for display
-    tot_df_display = tot_df.copy()
-    for c in tot_df_display.columns:
-        if "$" in c:
-            tot_df_display[c] = tot_df_display[c].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-    st.dataframe(tot_df_display, use_container_width=True)
+    st.dataframe(
+        tot_df,
+        use_container_width=True,
+        column_config={
+            **{c: st.column_config.NumberColumn(format="%.0f", width="small") for c in tot_df.columns if "Units" in c},
+            **{c: st.column_config.NumberColumn(format="$%,.2f", width="small") for c in tot_df.columns if "$" in c},
+        }
+    )
 
 with tab_summary:
     st.subheader("Summary by retailer and week")
@@ -765,8 +839,8 @@ with tab_summary:
 
             col_cfg = {}
             for lbl in selected_labels:
-                col_cfg[f"{lbl} Units"] = st.column_config.NumberColumn(format="%.0f")
-                col_cfg[f"{lbl} $"] = st.column_config.NumberColumn(format="$%,.2f")
+                col_cfg[f"{lbl} Units"] = st.column_config.NumberColumn(format="%.0f", width="small")
+                col_cfg[f"{lbl} $"] = st.column_config.NumberColumn(format="$%,.2f", width="small")
 
             st.dataframe(out, use_container_width=True, column_config=col_cfg)
 
@@ -785,8 +859,8 @@ with tab_summary:
                 totals,
                 use_container_width=True,
                 column_config={
-                    "Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f"),
-                    "Total $ (Selected Weeks)": st.column_config.NumberColumn(format="$%,.2f"),
+                    "Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),
+                    "Total $ (Selected Weeks)": st.column_config.NumberColumn(format="$%,.2f", width="small"),
                 }
             )
 with tab_top_retailer:
@@ -958,8 +1032,8 @@ with tab_total_sku:
                     out,
                     use_container_width=True,
                     column_config={
-                        "Unit Price": st.column_config.NumberColumn(format="$%,.2f"),
-                        "Total $": st.column_config.NumberColumn(format="$%,.2f"),
-                        "Total Units": st.column_config.NumberColumn(format="%.0f"),
+                        "Unit Price": st.column_config.NumberColumn(format="$%,.2f", width="small"),
+                        "Total $": st.column_config.NumberColumn(format="$%,.2f", width="small"),
+                        "Total Units": st.column_config.NumberColumn(format="%.0f", width="small"),
                     }
                 )
