@@ -921,7 +921,7 @@ with tab_report:
             data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
             update_mode=GridUpdateMode.NO_UPDATE,
             allow_unsafe_jscode=True,
-            theme="alpine",
+            theme="alpine-dark",
         )
 
         edited = view_df
@@ -966,7 +966,7 @@ with tab_report:
             gb.configure_column("Δ Units (Last - Prev)", editable=False, valueFormatter=JS_NUMBER0_FMT, cellStyle=JS_POSNEG_STYLE, width=120)
 
         if "Total $ (Units x Price)" in grid_df.columns:
-            gb.configure_column("Total $ (Units x Price)", pinned="right", editable=False, valueFormatter=JS_CURRENCY_FMT, cellStyle=JS_POSNEG_STYLE, width=140)
+            gb.configure_column("Total $ (Units x Price)", pinned="right", valueFormatter=JS_CURRENCY_FMT, cellStyle=JS_POSNEG_STYLE, width=140)
 
         grid_options = gb.build()
 
@@ -977,7 +977,7 @@ with tab_report:
             data_return_mode=DataReturnMode.AS_INPUT,
             update_mode=GridUpdateMode.VALUE_CHANGED,
             allow_unsafe_jscode=True,
-            theme="alpine",
+            theme="alpine-dark",
         )
 
         edited = pd.DataFrame(grid_resp["data"])
