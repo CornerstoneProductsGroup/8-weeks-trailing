@@ -731,6 +731,17 @@ with tab_report:
             view_df[c] = tmp.apply(_fmt_currency)
 
 
+        def _color_pos_neg(val):
+            try:
+                v = float(str(val).replace('$','').replace(',',''))
+            except Exception:
+                return ""
+            if v > 0:
+                return "color: #1f8b4c; font-weight: 600;"
+            if v < 0:
+                return "color: #c92a2a; font-weight: 600;"
+            return ""
+
         styled = view_df.style
         # Currency formatting (Streamlit ignores column_config formats for Styler)
         if "Total $ (Units x Price)" in view_df.columns:
