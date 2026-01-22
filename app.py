@@ -756,6 +756,18 @@ labels = [w[2] for w in week_meta]
 # -----------------------------
 # Sidebar controls (retailer/weeks/upload)
 # -----------------------------
+
+# Ensure `retailer` is defined before sidebar UI-state restore runs (Report tab also has its own dropdown).
+try:
+    _ret_df = pd.read_sql_query('SELECT DISTINCT retailer FROM weekly_results', conn)
+    _ret_list = sorted(_ret_df['retailer'].dropna().unique().tolist())
+except Exception:
+    _ret_list = []
+if _ret_list:
+    retailer = st.session_state.get('retailer_report_tab', _ret_list[0])
+else:
+    retailer = st.session_state.get('retailer_report_tab', '')
+
 with st.sidebar:
     st.header("Setup (optional)")
     st.caption("Vendor map is bundled in the repo. Upload only if you want to replace it.")
