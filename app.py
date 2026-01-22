@@ -719,6 +719,11 @@ with tab_report:
     hidden_sales = pd.to_numeric(df["Sales"], errors="coerce") if "Sales" in df.columns else None
     df = df.drop(columns=[c for c in ["Sales", "Notes"] if c in df.columns])
 
+    # Ensure all money columns are numeric + rounded (prevents long float tails)
+    money_cols_all = [c for c in df.columns if "$" in c]
+    for c in money_cols_all:
+        df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
+
     # Disable columns: keep Vendor/SKU and non-edit weeks read-only
     disabled_cols = ["Vendor", "SKU", "Total $ (Units x Price)", "Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
 
@@ -727,15 +732,17 @@ with tab_report:
 
     if not edit_mode:
         view_df = df.copy()
+
+    # Display copy: format money columns as currency strings (guaranteed $ + commas + 2 decimals)
+    view_display = view_df.copy()
+    money_cols = [c for c in view_display.columns if "$" in c]
+    for c in money_cols:
+        view_display[c] = pd.to_numeric(view_display[c], errors="coerce").round(2).apply(fmt_currency_str)
+
         # Ensure money columns are numeric + rounded for stable currency display
         money_cols = [c for c in view_df.columns if '$' in c]
         for c in money_cols:
             view_df[c] = pd.to_numeric(view_df[c], errors='coerce').round(2)
-
-        # Build display copy with currency strings (guaranteed $ + commas + 2 decimals)
-        view_display = view_df.copy()
-        for c in money_cols:
-            view_display[c] = view_display[c].apply(fmt_currency_str)
 
         def _color_pos_neg(val):
             try:
@@ -749,6 +756,10 @@ with tab_report:
             return ""
 
         styled = view_display.style
+
+        # Currency formatting (Streamlit ignores column_config formats for Styler)
+        if "Total $ (Units x Price)" in view_df.columns:
+            styled = styled.format({"Total $ (Units x Price)": "${:,.2f}"})
 
         if color_deltas:
             if "Δ Units (Last - Prev)" in view_df.columns:
@@ -770,8 +781,14 @@ with tab_report:
         )
         edited = view_df
     else:
+        # Editor copy: keep weeks numeric for editing, but show money columns formatted
+        df_editor = df.copy()
+        money_cols_editor = [c for c in df_editor.columns if "$" in c]
+        for c in money_cols_editor:
+            df_editor[c] = pd.to_numeric(df_editor[c], errors="coerce").round(2).apply(fmt_currency_str)
+
         edited = st.data_editor(
-            df,
+            df_editor,
             height=900,
             use_container_width=False,
             hide_index=True,
@@ -820,10 +837,10 @@ with tab_report:
     else:
         tot_df["Δ Units (Last - Prev)"] = [pd.NA, pd.NA]
         tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
-    tot_df_display = tot_df.copy()
+        tot_df_display = tot_df.copy()
     for c in tot_df_display.columns:
-        if '$' in c:
-            tot_df_display[c] = tot_df_display[c].apply(fmt_currency_str)
+        if "$" in c:
+            tot_df_display[c] = pd.to_numeric(tot_df_display[c], errors="coerce").round(2).apply(fmt_currency_str)
 
     st.dataframe(
         tot_df_display,
@@ -901,7 +918,7 @@ with tab_summary:
             out_display = out.copy()
             for c in out_display.columns:
                 if c.endswith(' $'):
-                    out_display[c] = out_display[c].apply(fmt_currency_str)
+                    out_display[c] = pd.to_numeric(out_display[c], errors='coerce').round(2).apply(fmt_currency_str)
             st.dataframe(out_display, use_container_width=False, column_config=col_cfg)
 
             st.divider()
@@ -916,7 +933,8 @@ with tab_summary:
             }).sort_values("Total $ (Selected Weeks)", ascending=False)
 
             totals_display = totals.copy()
-            totals_display['Total $ (Selected Weeks)'] = totals_display['Total $ (Selected Weeks)'].apply(fmt_currency_str)
+            if 'Total $ (Selected Weeks)' in totals_display.columns:
+                totals_display['Total $ (Selected Weeks)'] = pd.to_numeric(totals_display['Total $ (Selected Weeks)'], errors='coerce').round(2).apply(fmt_currency_str)
             st.dataframe(
                 totals_display,
                 use_container_width=False,
@@ -1092,9 +1110,9 @@ with tab_total_sku:
 
                 out_display = out.copy()
                 if 'Unit Price' in out_display.columns:
-                    out_display['Unit Price'] = out_display['Unit Price'].apply(fmt_currency_str)
+                    out_display['Unit Price'] = pd.to_numeric(out_display['Unit Price'], errors='coerce').round(2).apply(fmt_currency_str)
                 if 'Total $' in out_display.columns:
-                    out_display['Total $'] = out_display['Total $'].apply(fmt_currency_str)
+                    out_display['Total $'] = pd.to_numeric(out_display['Total $'], errors='coerce').round(2).apply(fmt_currency_str)
                 st.dataframe(
                     out_display,
                     use_container_width=False,
