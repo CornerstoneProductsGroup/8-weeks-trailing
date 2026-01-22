@@ -853,6 +853,8 @@ with tab_report:
 
         # Units table (numeric)
         view_units = view_df.copy()
+        # Units table should not include any $ columns (sales are shown in the separate dollars table)
+        view_units = view_units[[c for c in view_units.columns if '$' not in c]]
 
         # Dollars table: Vendor, SKU + $ per selected week (units * unit_price)
         view_dollars = pd.DataFrame({
