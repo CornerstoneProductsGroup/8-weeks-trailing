@@ -68,6 +68,8 @@ def ensure_mapping_loaded(conn, mapping_path: str):
 
         df_norm = df_norm[df_norm["sku"].ne("") & df_norm["retailer"].ne("")].copy()
         df_norm["active"] = 1
+        df_norm["sort_order"] = pd.NA
+
         # De-duplicate to avoid UNIQUE/PK conflicts (keep first)
         df_norm = df_norm.drop_duplicates(subset=["retailer", "sku"], keep="first")
 
