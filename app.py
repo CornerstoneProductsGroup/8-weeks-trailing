@@ -874,8 +874,8 @@ with tab_report:
                 height=900,
                 column_config={
                     **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
-                    "Vendor": st.column_config.TextColumn(width="medium"),
-                    "SKU": st.column_config.TextColumn(width="medium"),
+                    "Vendor": st.column_config.TextColumn(width="small"),
+                    "SKU": st.column_config.TextColumn(width="small"),
                     "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
                 },
             )
@@ -917,8 +917,8 @@ with tab_report:
                 disabled=disabled_cols,
                 column_config={
                     **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
-                    "Vendor": st.column_config.TextColumn(width="medium"),
-                    "SKU": st.column_config.TextColumn(width="medium"),
+                    "Vendor": st.column_config.TextColumn(width="small"),
+                    "SKU": st.column_config.TextColumn(width="small"),
                     "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
                 }
             )
@@ -1129,7 +1129,7 @@ with tab_top_retailer:
                     "sku": "SKU",
                     "Units": "Total Units (Selected Weeks)"
                 })[["SKU", "Vendor", "Total Units (Selected Weeks)"]]
-                st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="medium"),"Vendor": st.column_config.TextColumn(width="medium"),})
+                st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="small"),"Vendor": st.column_config.TextColumn(width="small"),})
 
 with tab_top_vendor:
     st.subheader("Top SKU per vendor, per retailer (by Units)")
@@ -1188,7 +1188,7 @@ with tab_top_vendor:
                     })[["SKU", "Total Units (Selected Weeks)"]]
 
                     st.write(f"**{vend}**")
-                    st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="medium"),"Vendor": st.column_config.TextColumn(width="medium"),})
+                    st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="small"),"Vendor": st.column_config.TextColumn(width="small"),})
 with tab_total_sku:
     st.subheader("Total $ per SKU (selected weeks)")
     st.caption("Totals are summed across the weeks you selected in the sidebar. This uses Unit Price from the vendor map.")
