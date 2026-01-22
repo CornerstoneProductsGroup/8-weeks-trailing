@@ -715,33 +715,21 @@ with tab_report:
 
     if not edit_mode:
         view_df = df.copy()
-
-    def _fmt_currency(x):
-        try:
-            if x is None or (isinstance(x, float) and pd.isna(x)):
-                return ""
-            v = float(x)
-            return f"${v:,.2f}"
-        except Exception:
-            return ""
-
-    # Force currency display for money columns (robust even with Styler)
-    money_cols = [c for c in view_df.columns if "$" in c]
-    for c in money_cols:
-        tmp = pd.to_numeric(view_df[c], errors="coerce").round(2)
-        view_df[c] = tmp.apply(_fmt_currency)
-
-
-        def _color_pos_neg(val):
+        def _fmt_currency(x):
             try:
-                v = float(str(val).replace("$","").replace(",",""))
+                if x is None or (isinstance(x, float) and pd.isna(x)):
+                    return ""
+                v = float(x)
+                return f"${v:,.2f}"
             except Exception:
                 return ""
-            if v > 0:
-                return "color: #1f8b4c; font-weight: 600;"
-            if v < 0:
-                return "color: #c92a2a; font-weight: 600;"
-            return ""
+
+        # Force currency display for money columns (robust even with Styler)
+        money_cols = [c for c in view_df.columns if "$" in c]
+        for c in money_cols:
+            tmp = pd.to_numeric(view_df[c], errors="coerce").round(2)
+            view_df[c] = tmp.apply(_fmt_currency)
+
 
         styled = view_df.style
         # Currency formatting (Streamlit ignores column_config formats for Styler)
