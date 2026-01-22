@@ -7,6 +7,18 @@ def _file_md5(path: str) -> str:
     return h.hexdigest()
 
 
+BIGGER_TABLES_CSS = """
+<style>
+/* Make dataframe text slightly smaller to fit more columns */
+div[data-testid="stDataFrame"] table td, 
+div[data-testid="stDataFrame"] table th {
+  font-size: 12px !important;
+  padding: 0.18rem 0.32rem !important;
+  white-space: nowrap;
+}
+</style>
+"""
+
 # ---------- AUTOLOAD_VENDOR_MAP ----------
 # Load Vendor-SKU pricing map automatically from local file on startup
 def autoload_vendor_map(conn):
@@ -687,6 +699,7 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # UI
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+st.markdown(BIGGER_TABLES_CSS, unsafe_allow_html=True)
 st.markdown(COMPACT_TABLE_CSS, unsafe_allow_html=True)
 st.markdown(SPLIT_TABLE_CSS, unsafe_allow_html=True)
 st.title(APP_TITLE)
@@ -816,7 +829,7 @@ with st.sidebar:
         if parsed_label:
             st.caption(f"Detected week in filename: {parsed_label}")
 
-        if st.button("Import units into Edit Week", type="primary", use_container_width=False):
+        if st.button("Import units into Edit Week", type="primary", use_container_width=True):
             chosen_start, chosen_end, _ = next((a, b, l) for a, b, l in week_meta if l == edit_week)
 
             wb_up = load_workbook(app_file, data_only=True)
@@ -970,8 +983,8 @@ with tab_report:
                 styled_units = styled_units.applymap(_color_pos_neg, subset=["Δ Units (Last - Prev)"])
             st.dataframe(
                 styled_units,
-                use_container_width=False,
-                height=900,
+                use_container_width=True,
+                height=1200,
                 column_config={
                     "Vendor": st.column_config.TextColumn(width="small"),
                     "SKU": st.column_config.TextColumn(width="small"),
@@ -986,8 +999,8 @@ with tab_report:
                 styled_dollars = styled_dollars.applymap(_color_pos_neg, subset=["Δ $ (Last - Prev)"])
             st.dataframe(
                 styled_dollars,
-                use_container_width=False,
-                height=900,
+                use_container_width=True,
+                height=1200,
                 hide_index=True,
                 column_config={
                     "Vendor": st.column_config.TextColumn(width="small"),
@@ -1012,8 +1025,8 @@ with tab_report:
 
             edited = st.data_editor(
                 df_editor_main,
-                height=900,
-                use_container_width=False,
+                height=1200,
+                use_container_width=True,
                 hide_index=True,
                 disabled=disabled_cols,
                 column_config={
@@ -1065,8 +1078,8 @@ with tab_report:
 
             st.dataframe(
                 dollars,
-                use_container_width=False,
-                height=900,
+                use_container_width=True,
+                height=1200,
                 hide_index=True,
                 column_config={
                     "Vendor": st.column_config.TextColumn(width="small"),
@@ -1154,7 +1167,7 @@ with tab_summary:
             for c in out_display.columns:
                 if c.endswith(' $'):
                     out_display[c] = pd.to_numeric(out_display[c], errors='coerce').round(2).apply(fmt_currency_str)
-            st.dataframe(out_display, use_container_width=False, column_config=col_cfg)
+            st.dataframe(out_display, use_container_width=True, column_config=col_cfg)
 
             st.divider()
             st.subheader("Totals across selected weeks")
@@ -1172,7 +1185,7 @@ with tab_summary:
                 totals_display['Total $ (Selected Weeks)'] = pd.to_numeric(totals_display['Total $ (Selected Weeks)'], errors='coerce').round(2).apply(fmt_currency_str)
             st.dataframe(
                 totals_display,
-                use_container_width=False,
+                use_container_width=True,
                 column_config={
                     "Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),
                     "Total $ (Selected Weeks)": st.column_config.NumberColumn(format="$%,.2f", width="small"),
@@ -1228,7 +1241,7 @@ with tab_top_retailer:
                     "sku": "SKU",
                     "Units": "Total Units (Selected Weeks)"
                 })[["SKU", "Vendor", "Total Units (Selected Weeks)"]]
-                st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="small"),"Vendor": st.column_config.TextColumn(width="small"),})
+                st.dataframe(out, use_container_width=True, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="small"),"Vendor": st.column_config.TextColumn(width="small"),})
 
 with tab_top_vendor:
     st.subheader("Top SKU per vendor, per retailer (by Units)")
@@ -1287,7 +1300,7 @@ with tab_top_vendor:
                     })[["SKU", "Total Units (Selected Weeks)"]]
 
                     st.write(f"**{vend}**")
-                    st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="small"),"Vendor": st.column_config.TextColumn(width="small"),})
+                    st.dataframe(out, use_container_width=True, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="small"),"Vendor": st.column_config.TextColumn(width="small"),})
 with tab_total_sku:
     st.subheader("Total $ per SKU (selected weeks)")
     st.caption("Totals are summed across the weeks you selected in the sidebar. This uses Unit Price from the vendor map.")
@@ -1350,7 +1363,7 @@ with tab_total_sku:
                     out_display['Total $'] = pd.to_numeric(out_display['Total $'], errors='coerce').round(2).apply(fmt_currency_str)
                 st.dataframe(
                     out_display,
-                    use_container_width=False,
+                    use_container_width=True,
                     column_config={
                         "Unit Price": st.column_config.NumberColumn(format="$%,.2f", width="small"),
                         "Total $": st.column_config.NumberColumn(format="$%,.2f", width="small"),
