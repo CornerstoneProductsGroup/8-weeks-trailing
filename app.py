@@ -733,16 +733,11 @@ with tab_report:
     if not edit_mode:
         view_df = df.copy()
 
-    # Display copy: format money columns as currency strings (guaranteed $ + commas + 2 decimals)
-    view_display = view_df.copy()
-    money_cols = [c for c in view_display.columns if "$" in c]
-    for c in money_cols:
-        view_display[c] = pd.to_numeric(view_display[c], errors="coerce").round(2).apply(fmt_currency_str)
-
-        # Ensure money columns are numeric + rounded for stable currency display
-        money_cols = [c for c in view_df.columns if '$' in c]
+        # Display copy: format money columns as currency strings (guaranteed $ + commas + 2 decimals)
+        view_display = view_df.copy()
+        money_cols = [c for c in view_display.columns if "$" in c]
         for c in money_cols:
-            view_df[c] = pd.to_numeric(view_df[c], errors='coerce').round(2)
+            view_display[c] = pd.to_numeric(view_display[c], errors="coerce").round(2).apply(fmt_currency_str)
 
         def _color_pos_neg(val):
             try:
@@ -756,15 +751,10 @@ with tab_report:
             return ""
 
         styled = view_display.style
-
-        # Currency formatting (Streamlit ignores column_config formats for Styler)
-        if "Total $ (Units x Price)" in view_df.columns:
-            styled = styled.format({"Total $ (Units x Price)": "${:,.2f}"})
-
         if color_deltas:
-            if "Δ Units (Last - Prev)" in view_df.columns:
+            if "Δ Units (Last - Prev)" in view_display.columns:
                 styled = styled.applymap(_color_pos_neg, subset=["Δ Units (Last - Prev)"])
-            if "Total $ (Units x Price)" in view_df.columns:
+            if "Total $ (Units x Price)" in view_display.columns:
                 styled = styled.applymap(_color_pos_neg, subset=["Total $ (Units x Price)"])
 
         st.dataframe(
@@ -775,10 +765,12 @@ with tab_report:
             **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
                 "Vendor": st.column_config.TextColumn(width="medium"),
                 "SKU": st.column_config.TextColumn(width="medium"),
-                "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f", width="small"),
+                "Total $ (Units x Price)": st.column_config.TextColumn(width="small"),
                 "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
             },
         )
+
+        # Use numeric df for saving (even though display shows formatted currency strings)
         edited = view_df
     else:
         # Editor copy: keep weeks numeric for editing, but show money columns formatted
