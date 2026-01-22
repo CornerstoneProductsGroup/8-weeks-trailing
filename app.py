@@ -1108,25 +1108,70 @@ with tab_summary:
     st.subheader("Summary")
     st.caption("Totals per retailer by week (Sales $).")
 
-    # Build list of selected weeks (labels) from the current selector
     selected_labels = display_weeks
+    label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
+    selected_starts = [label_to_start[lbl] for lbl in selected_labels if lbl in label_to_start]
 
-    if not selected_labels:
+    if not selected_starts:
         st.info("Select at least one week.")
     else:
-        # The existing helper builds 'out' with columns like '<label> Units' and '<label> $'
-        out, totals = build_summary_tables(conn, week_meta, selected_labels)
-
-        out_sales = pd.DataFrame(index=out.index)
-        for lbl in selected_labels:
-            out_sales[lbl] = pd.to_numeric(out.get(f"{lbl} $", 0), errors="coerce").fillna(0).round(2).apply(fmt_currency_str)
-
-        st.dataframe(
-            out_sales,
-            use_container_width=True,
-            height=650,
-            column_config={lbl: st.column_config.TextColumn(width="small") for lbl in selected_labels},
+        placeholders = ",".join(["?"] * len(selected_starts))
+        wk = pd.read_sql_query(
+            f'''
+            SELECT week_start, retailer, sku, units_auto, units_override
+            FROM weekly_results
+            WHERE week_start IN ({placeholders})
+            ''',
+            conn,
+            params=selected_starts
         )
+
+        if wk.empty:
+            st.info("No data found for the selected weeks yet.")
+        else:
+            wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
+            wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
+
+            mapping_all = pd.read_sql_query(
+                '''
+                SELECT retailer, sku, unit_price
+                FROM sku_mapping
+                WHERE active = 1
+                ''',
+                conn
+            )
+            mapping_all["unit_price"] = pd.to_numeric(mapping_all["unit_price"], errors="coerce").fillna(0)
+
+            dfm = wk.merge(mapping_all, on=["retailer", "sku"], how="left")
+            dfm["unit_price"] = pd.to_numeric(dfm["unit_price"], errors="coerce").fillna(0)
+            dfm["Sales"] = (dfm["Units"] * dfm["unit_price"]).round(2)
+
+            # totals by retailer + week_start
+            agg = dfm.groupby(["retailer", "week_start"], as_index=False).agg(
+                Sales=("Sales", "sum"),
+            )
+
+            # map week_start back to label for display
+            start_to_label = {start.isoformat(): lbl for start, _, lbl in week_meta}
+            agg["Week"] = agg["week_start"].map(start_to_label)
+
+            pivot = agg.pivot_table(index="retailer", columns="Week", values="Sales", aggfunc="sum", fill_value=0).reset_index()
+            # ensure column order matches selected_labels
+            cols = ["retailer"] + [lbl for lbl in selected_labels if lbl in pivot.columns]
+            pivot = pivot[cols].rename(columns={"retailer": "Retailer"})
+
+            # format currency
+            for lbl in selected_labels:
+                if lbl in pivot.columns:
+                    pivot[lbl] = pd.to_numeric(pivot[lbl], errors="coerce").round(2).apply(fmt_currency_str)
+
+            st.dataframe(
+                pivot,
+                use_container_width=True,
+                height=650,
+                hide_index=True,
+                column_config={c: st.column_config.TextColumn(width="small") for c in pivot.columns},
+            )
 with tab_top_retailer:
     st.subheader("Top 10 by Retailer")
     st.caption("Two views per retailer: Units (left) and Sales ($) (right), based on the selected weeks.")
