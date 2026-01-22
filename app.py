@@ -1124,7 +1124,7 @@ with tab_report:
 
 with tab_summary:
     st.subheader("Summary")
-    st.caption("Totals per retailer by week (Sales $).")
+    st.caption("Totals per retailer by week (Sales $). Includes Δ $ (Last - Prev) and a Total row at the bottom.")
 
     selected_labels = display_weeks
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
@@ -1173,18 +1173,55 @@ with tab_summary:
             start_to_label = {start.isoformat(): lbl for start, _, lbl in week_meta}
             agg["Week"] = agg["week_start"].map(start_to_label)
 
-            pivot = agg.pivot_table(index="retailer", columns="Week", values="Sales", aggfunc="sum", fill_value=0).reset_index()
-            # ensure column order matches selected_labels
-            cols = ["retailer"] + [lbl for lbl in selected_labels if lbl in pivot.columns]
-            pivot = pivot[cols].rename(columns={"retailer": "Retailer"})
+            pivot = agg.pivot_table(index="retailer", columns="Week", values="Sales", aggfunc="sum", fill_value=0)
 
-            # format currency
-            for lbl in selected_labels:
-                if lbl in pivot.columns:
-                    pivot[lbl] = pd.to_numeric(pivot[lbl], errors="coerce").round(2).apply(fmt_currency_str)
+            # ensure column order matches selected_labels
+            ordered = [lbl for lbl in selected_labels if lbl in pivot.columns]
+            pivot = pivot[ordered].copy()
+
+            # add delta column (last - prev)
+            if len(ordered) >= 2:
+                prev_lbl, last_lbl = ordered[-2], ordered[-1]
+                pivot["Δ $ (Last - Prev)"] = (pivot[last_lbl] - pivot[prev_lbl]).round(2)
+            else:
+                pivot["Δ $ (Last - Prev)"] = 0.0
+
+            pivot = pivot.reset_index().rename(columns={"retailer": "Retailer"})
+
+            # Add total row at bottom
+            total_row = {"Retailer": "Total"}
+            for lbl in ordered:
+                total_row[lbl] = float(pivot[lbl].sum())
+            total_row["Δ $ (Last - Prev)"] = float(pivot["Δ $ (Last - Prev)"].sum())
+            pivot = pd.concat([pivot, pd.DataFrame([total_row])], ignore_index=True)
+
+            # format currency columns
+            for lbl in ordered + ["Δ $ (Last - Prev)"]:
+                pivot[lbl] = pd.to_numeric(pivot[lbl], errors="coerce").round(2).apply(fmt_currency_str)
+
+            # Optional coloring for delta
+            def _color_pos_neg(val):
+                s = str(val)
+                try:
+                    neg = s.strip().startswith('(') and s.strip().endswith(')')
+                    s2 = s.replace('(', '').replace(')', '').replace('$', '').replace(',', '')
+                    v = float(s2) if s2.strip() != '' else 0.0
+                    if neg:
+                        v = -abs(v)
+                except Exception:
+                    return ""
+                if v > 0:
+                    return "color: #1f8b4c; font-weight: 600;"
+                if v < 0:
+                    return "color: #c92a2a; font-weight: 600;"
+                return ""
+
+            styled = pivot.style
+            if "Δ $ (Last - Prev)" in pivot.columns:
+                styled = styled.applymap(_color_pos_neg, subset=["Δ $ (Last - Prev)"])
 
             st.dataframe(
-                pivot,
+                styled,
                 use_container_width=True,
                 height=650,
                 hide_index=True,
