@@ -776,9 +776,21 @@ with st.sidebar:
 # -----------------------------
 # Main tabs
 # -----------------------------
+
+# Global toggles (apply across all tabs)
+if "global_edit_mode" not in st.session_state:
+    st.session_state["global_edit_mode"] = True
+if "global_color_deltas" not in st.session_state:
+    st.session_state["global_color_deltas"] = True
+
+st.toggle("Edit mode (applies to all tabs)", key="global_edit_mode")
+st.toggle("Color positive/negative deltas", key="global_color_deltas")
+
 tab_report, tab_summary, tab_top_retailer, tab_top_vendor, tab_total_sku = st.tabs(["Report", "Summary", "Top 10 by Retailer", "Top SKU by Vendor", "Total $ per SKU"])
 
 with tab_report:
+    edit_mode = st.session_state.get('global_edit_mode', True)
+    color_deltas = st.session_state.get('global_color_deltas', True)
     st.markdown(f"**Retailer:** {retailer}  |  **Edit week:** {edit_week}  |  **Weeks shown:** {', '.join(display_weeks)}")
 
     # Build and render table
@@ -810,9 +822,6 @@ with tab_report:
 
     # Disable columns: keep Vendor/SKU and non-edit weeks read-only
     disabled_cols = ["Vendor", "SKU", "Total $ (Units x Price)", "Δ Units (Last - Prev)"] + [w for w in display_weeks if w != edit_week]
-
-    edit_mode = st.toggle("Edit mode", value=True)
-    color_deltas = st.toggle("Color positive/negative deltas", value=True)
 
     if not edit_mode:
         view_df = df.copy()
@@ -909,20 +918,7 @@ with tab_report:
         delta_units = pd.NA
         delta_dollars = pd.NA
 
-    st.markdown("#### Charts")
-    if week_cols:
-        units_chart = pd.DataFrame({"Total Units": [tot_units[w] for w in week_cols]}, index=week_cols)
-        dollars_chart = pd.DataFrame({"Total $": [tot_dollars[w] for w in week_cols]}, index=week_cols)
-        c_units, c_dollars = st.columns(2)
-        with c_units:
-            st.caption("Total Units by Week")
-            st.bar_chart(units_chart)
-        with c_dollars:
-            st.caption("Total $ by Week")
-            st.bar_chart(dollars_chart)
-
-    st.markdown("#### Totals Tables")
-    # Units table (numbers only)
+        # Units table (numbers only)
     units_row = {w: tot_units[w] for w in week_cols}
     units_row["Δ Units (Last - Prev)"] = delta_units
     units_df = pd.DataFrame([units_row], index=["Total Units"])
