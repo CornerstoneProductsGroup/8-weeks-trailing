@@ -457,6 +457,7 @@ def build_multiweek_df(conn, retailer: str, week_meta: list[tuple[date,date,str]
         prev_u = pd.to_numeric(base[prev_lbl], errors="coerce").fillna(0)
         last_u = pd.to_numeric(base[last_lbl], errors="coerce").fillna(0)
         base["Total $ (Units x Price)"] = ((last_u - prev_u) * base["Unit Price"].fillna(0)).where(base["Unit Price"].notna(), pd.NA)
+        base["Total $ (Units x Price)"] = pd.to_numeric(base["Total $ (Units x Price)"], errors="coerce").round(2)
     else:
         base["Total $ (Units x Price)"] = pd.NA
     # Δ Units between the last two displayed weeks (per SKU)
@@ -715,9 +716,25 @@ with tab_report:
     if not edit_mode:
         view_df = df.copy()
 
+    def _fmt_currency(x):
+        try:
+            if x is None or (isinstance(x, float) and pd.isna(x)):
+                return ""
+            v = float(x)
+            return f"${v:,.2f}"
+        except Exception:
+            return ""
+
+    # Force currency display for money columns (robust even with Styler)
+    money_cols = [c for c in view_df.columns if "$" in c]
+    for c in money_cols:
+        tmp = pd.to_numeric(view_df[c], errors="coerce").round(2)
+        view_df[c] = tmp.apply(_fmt_currency)
+
+
         def _color_pos_neg(val):
             try:
-                v = float(val)
+                v = float(str(val).replace("$","").replace(",",""))
             except Exception:
                 return ""
             if v > 0:
@@ -789,6 +806,10 @@ with tab_report:
         tot_dollars[w] = float((u * unit_price).sum())
 
     tot_df = pd.DataFrame([tot_units, tot_dollars], index=["Total Units", "Total $"])
+
+    # Round dollar totals for clean display
+    if 'Total $' in tot_df.index:
+        tot_df.loc['Total $'] = pd.to_numeric(tot_df.loc['Total $'], errors='coerce').round(2)
 
     if len(week_cols) >= 2:
         prev_w, last_w = week_cols[-2], week_cols[-1]
@@ -1041,7 +1062,7 @@ with tab_total_sku:
             dfm = agg.merge(mapping_all, on=["retailer", "sku"], how="left")
             dfm["vendor"] = dfm["vendor"].fillna("Unknown")
             dfm["unit_price"] = pd.to_numeric(dfm["unit_price"], errors="coerce").fillna(0)
-            dfm["Total $"] = dfm["Units"] * dfm["unit_price"]
+            dfm["Total $"] = (dfm["Units"] * dfm["unit_price"]).round(2)
 
             for ret in sorted(dfm["retailer"].unique().tolist()):
                 st.markdown(f"### {ret}")
