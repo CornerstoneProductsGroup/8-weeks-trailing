@@ -68,10 +68,13 @@ def ensure_mapping_loaded(conn, mapping_path: str):
 
         df_norm = df_norm[df_norm["sku"].ne("") & df_norm["retailer"].ne("")].copy()
         df_norm["active"] = 1
+        # De-duplicate to avoid UNIQUE/PK conflicts (keep first)
+        df_norm = df_norm.drop_duplicates(subset=["retailer", "sku"], keep="first")
 
-        # Replace existing mapping
-        conn.execute("DELETE FROM sku_mapping")
-        df_norm.to_sql("sku_mapping", conn, if_exists="append", index=False)
+        # Replace existing mapping table atomically
+        df_norm.to_sql("sku_mapping", conn, if_exists="replace", index=False)
+        conn.commit()
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sku_mapping_retailer_sku ON sku_mapping(retailer, sku)")
         conn.commit()
         if file_hash:
             set_meta(conn, "mapping_hash", file_hash)
