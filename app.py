@@ -870,7 +870,7 @@ with tab_summary:
                 col_cfg[f"{lbl} Units"] = st.column_config.NumberColumn(format="%.0f", width="small")
                 col_cfg[f"{lbl} $"] = st.column_config.NumberColumn(format="$%,.2f", width="small")
 
-            st.dataframe(out, use_container_width=True, column_config=col_cfg)
+            st.dataframe(out, use_container_width=False, column_config=col_cfg)
 
             st.divider()
             st.subheader("Totals across selected weeks")
@@ -885,7 +885,7 @@ with tab_summary:
 
             st.dataframe(
                 totals,
-                use_container_width=True,
+                use_container_width=False,
                 column_config={
                     "Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),
                     "Total $ (Selected Weeks)": st.column_config.NumberColumn(format="$%,.2f", width="small"),
@@ -941,7 +941,7 @@ with tab_top_retailer:
                     "sku": "SKU",
                     "Units": "Total Units (Selected Weeks)"
                 })[["SKU", "Vendor", "Total Units (Selected Weeks)"]]
-                st.dataframe(out, use_container_width=True)
+                st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="medium"),"Vendor": st.column_config.TextColumn(width="medium"),})
 
 with tab_top_vendor:
     st.subheader("Top SKU per vendor, per retailer (by Units)")
@@ -1000,7 +1000,7 @@ with tab_top_vendor:
                     })[["SKU", "Total Units (Selected Weeks)"]]
 
                     st.write(f"**{vend}**")
-                    st.dataframe(out, use_container_width=True)
+                    st.dataframe(out, use_container_width=False, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="medium"),"Vendor": st.column_config.TextColumn(width="medium"),})
 with tab_total_sku:
     st.subheader("Total $ per SKU (selected weeks)")
     st.caption("Totals are summed across the weeks you selected in the sidebar. This uses Unit Price from the vendor map.")
@@ -1058,7 +1058,7 @@ with tab_total_sku:
 
                 st.dataframe(
                     out,
-                    use_container_width=True,
+                    use_container_width=False,
                     column_config={
                         "Unit Price": st.column_config.NumberColumn(format="$%,.2f", width="small"),
                         "Total $": st.column_config.NumberColumn(format="$%,.2f", width="small"),
