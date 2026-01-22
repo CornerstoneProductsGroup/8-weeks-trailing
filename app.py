@@ -6,6 +6,74 @@ def _file_md5(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
+AGGRID_DARK_CSS = """
+<style>
+/* ---- AG Grid dark theme override to match Streamlit dark UI ---- */
+.ag-theme-alpine-dark, .ag-theme-alpine-dark .ag-root-wrapper, .ag-theme-alpine-dark .ag-root-wrapper-body {
+  background-color: #0e1117 !important;
+  color: #e6e6e6 !important;
+}
+.ag-theme-alpine-dark .ag-header, 
+.ag-theme-alpine-dark .ag-header-viewport, 
+.ag-theme-alpine-dark .ag-header-container {
+  background-color: #12151c !important;
+  color: #e6e6e6 !important;
+  border-bottom: 1px solid rgba(255,255,255,0.08) !important;
+}
+.ag-theme-alpine-dark .ag-header-cell, 
+.ag-theme-alpine-dark .ag-header-group-cell {
+  background-color: #12151c !important;
+  color: #e6e6e6 !important;
+  border-right: 1px solid rgba(255,255,255,0.06) !important;
+}
+.ag-theme-alpine-dark .ag-row {
+  background-color: #0e1117 !important;
+  color: #e6e6e6 !important;
+  border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+}
+.ag-theme-alpine-dark .ag-row-odd {
+  background-color: #0b0f14 !important;
+}
+.ag-theme-alpine-dark .ag-cell {
+  background-color: transparent !important;
+  color: #e6e6e6 !important;
+  border-right: 1px solid rgba(255,255,255,0.05) !important;
+}
+.ag-theme-alpine-dark .ag-row-hover, 
+.ag-theme-alpine-dark .ag-row-hover .ag-cell {
+  background-color: #141922 !important;
+}
+.ag-theme-alpine-dark .ag-row-selected, 
+.ag-theme-alpine-dark .ag-row-selected .ag-cell {
+  background-color: #1b2230 !important;
+}
+.ag-theme-alpine-dark .ag-pinned-left-cols-container,
+.ag-theme-alpine-dark .ag-pinned-right-cols-container {
+  background-color: #0e1117 !important;
+}
+.ag-theme-alpine-dark .ag-horizontal-left-spacer,
+.ag-theme-alpine-dark .ag-horizontal-right-spacer {
+  background-color: #0e1117 !important;
+}
+/* Scrollbars */
+.ag-theme-alpine-dark ::-webkit-scrollbar { height: 10px; width: 10px; }
+.ag-theme-alpine-dark ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 8px; }
+.ag-theme-alpine-dark ::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+
+/* Inputs/editing */
+.ag-theme-alpine-dark .ag-cell-inline-editing {
+  background-color: #111827 !important;
+}
+
+/* Make grid borders subtle */
+.ag-theme-alpine-dark .ag-root-wrapper {
+  border: 1px solid rgba(255,255,255,0.08) !important;
+  border-radius: 8px;
+  overflow: hidden;
+}
+</style>
+"""
 def init_meta(conn):
     conn.execute(
         """
@@ -658,6 +726,7 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # UI
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+st.markdown(AGGRID_DARK_CSS, unsafe_allow_html=True)
 st.title(APP_TITLE)
 
 
