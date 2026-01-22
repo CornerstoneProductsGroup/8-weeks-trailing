@@ -776,7 +776,6 @@ with st.sidebar:
     st.divider()
     st.header("Report controls")
 
-    retailer = st.selectbox("Retailer", retailers, key="retailer_sidebar")
 
     # Restore saved selections per retailer
     state_key = f"ui::{retailer}"
@@ -866,6 +865,13 @@ st.toggle("Color positive/negative deltas", key="global_color_deltas")
 tab_report, tab_summary, tab_top_retailer, tab_top_vendor = st.tabs(["Report", "Summary", "Top 10 by Retailer", "Top 5 SKUs per Vendor"])
 
 with tab_report:
+    # Retailer selector (inside the Report tab)
+    retailers = sorted(pd.read_sql_query('SELECT DISTINCT retailer FROM weekly_results', conn)['retailer'].dropna().unique().tolist())
+    if not retailers:
+        st.info('Upload a week workbook first so retailers appear here.')
+    else:
+        retailer = st.selectbox('Retailer', retailers, key='retailer_report_tab')
+
     edit_mode = st.session_state.get('global_edit_mode', True)
     color_deltas = st.session_state.get('global_color_deltas', True)
     st.markdown(f"**Retailer:** {retailer}  |  **Edit week:** {edit_week}  |  **Weeks shown:** {', '.join(display_weeks)}")
@@ -1257,9 +1263,10 @@ with tab_top_retailer:
                         },
                     )
 
+
 with tab_top_vendor:
-    st.subheader("Top 5 SKUs per Vendor (across ALL retailers)")
-    st.caption("Uses the selected weeks. For each vendor, shows the top 5 SKU+Retailer combinations by Units, and separately by Sales ($).")
+    st.subheader("Top 10 SKUs per Vendor (across ALL retailers)")
+    st.caption("Pick a vendor from the dropdown. Left table is Units, right table is Sales ($), across the selected weeks.")
 
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
     selected_starts = [label_to_start[lbl] for lbl in display_weeks if lbl in label_to_start]
@@ -1304,30 +1311,23 @@ with tab_top_vendor:
                 Sales=("Sales", "sum"),
             )
 
-            def top_n_per_vendor(df, value_col, n=5):
-                df2 = df.sort_values(["vendor", value_col], ascending=[True, False]).copy()
-                df2["Rank"] = df2.groupby("vendor").cumcount() + 1
-                return df2[df2["Rank"] <= n]
+            vendors = sorted(agg["vendor"].dropna().unique().tolist())
+            vendor_sel = st.selectbox("Vendor", vendors, key="vendor_dropdown_top10")
 
-            top_units = top_n_per_vendor(agg, "Units", 5)
-            top_sales = top_n_per_vendor(agg, "Sales", 5)
-
-            top_sales_disp = top_sales.copy()
-            top_sales_disp["Sales"] = pd.to_numeric(top_sales_disp["Sales"], errors="coerce").round(2).apply(fmt_currency_str)
+            sub = agg[agg["vendor"] == vendor_sel].copy()
+            sub = sub.sort_values("Units", ascending=False).head(10)
 
             left_col, right_col = st.columns([1, 1], gap="small")
 
             with left_col:
-                st.markdown("#### Top 5 per Vendor — Units")
-                t = top_units.rename(columns={"vendor": "Vendor", "retailer": "Retailer", "sku": "SKU"})[["Rank","Vendor","Retailer","SKU","Units"]]
+                st.markdown("#### Top 10 — Units")
+                t = sub[["retailer","sku","Units"]].rename(columns={"retailer":"Retailer","sku":"SKU"})
                 st.dataframe(
                     t,
                     use_container_width=True,
                     height=700,
                     hide_index=True,
                     column_config={
-                        "Rank": st.column_config.NumberColumn(format="%.0f", width="small"),
-                        "Vendor": st.column_config.TextColumn(width="small"),
                         "Retailer": st.column_config.TextColumn(width="small"),
                         "SKU": st.column_config.TextColumn(width="small"),
                         "Units": st.column_config.NumberColumn(format="%.0f", width="small"),
@@ -1335,18 +1335,18 @@ with tab_top_vendor:
                 )
 
             with right_col:
-                st.markdown("#### Top 5 per Vendor — Sales ($)")
-                t = top_sales_disp.rename(columns={"vendor": "Vendor", "retailer": "Retailer", "sku": "SKU"})[["Rank","Vendor","Retailer","SKU","Sales"]]
+                st.markdown("#### Top 10 — Sales ($)")
+                t = sub[["retailer","sku","Sales"]].rename(columns={"retailer":"Retailer","sku":"SKU"})
+                t["Sales"] = pd.to_numeric(t["Sales"], errors="coerce").round(2).apply(fmt_currency_str)
                 st.dataframe(
                     t,
                     use_container_width=True,
                     height=700,
                     hide_index=True,
                     column_config={
-                        "Rank": st.column_config.NumberColumn(format="%.0f", width="small"),
-                        "Vendor": st.column_config.TextColumn(width="small"),
                         "Retailer": st.column_config.TextColumn(width="small"),
                         "SKU": st.column_config.TextColumn(width="small"),
                         "Sales": st.column_config.TextColumn(width="small"),
                     },
                 )
+
