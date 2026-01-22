@@ -7,6 +7,22 @@ def _file_md5(path: str) -> str:
     return h.hexdigest()
 
 
+COMPACT_TABLE_CSS = """
+<style>
+/* Reduce padding inside Streamlit dataframes */
+div[data-testid="stDataFrame"] table td,
+div[data-testid="stDataFrame"] table th {
+  padding: 0.25rem 0.4rem !important;
+  white-space: nowrap;
+}
+
+/* Prevent tables from stretching wide */
+div[data-testid="stDataFrame"] {
+  max-width: 600px;
+}
+</style>
+"""
+
 SPLIT_TABLE_CSS = """
 <style>
 /* Slightly reduce spacing between Streamlit columns */
@@ -631,6 +647,7 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # UI
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+st.markdown(COMPACT_TABLE_CSS, unsafe_allow_html=True)
 st.markdown(SPLIT_TABLE_CSS, unsafe_allow_html=True)
 st.title(APP_TITLE)
 
@@ -759,7 +776,7 @@ with st.sidebar:
         if parsed_label:
             st.caption(f"Detected week in filename: {parsed_label}")
 
-        if st.button("Import units into Edit Week", type="primary", use_container_width=True):
+        if st.button("Import units into Edit Week", type="primary", use_container_width=False):
             chosen_start, chosen_end, _ = next((a, b, l) for a, b, l in week_meta if l == edit_week)
 
             wb_up = load_workbook(app_file, data_only=True)
@@ -885,7 +902,7 @@ with tab_report:
                 styled_units = styled_units.applymap(_color_pos_neg, subset=["Δ Units (Last - Prev)"])
             st.dataframe(
                 styled_units,
-                use_container_width=True,
+                use_container_width=False,
                 height=900,
                 column_config={
                     "Vendor": st.column_config.TextColumn(width="small"),
@@ -901,7 +918,7 @@ with tab_report:
                 styled_dollars = styled_dollars.applymap(_color_pos_neg, subset=["Δ $ (Last - Prev)"])
             st.dataframe(
                 styled_dollars,
-                use_container_width=True,
+                use_container_width=False,
                 height=900,
                 hide_index=True,
                 column_config={
@@ -928,7 +945,7 @@ with tab_report:
             edited = st.data_editor(
                 df_editor_main,
                 height=900,
-                use_container_width=True,
+                use_container_width=False,
                 hide_index=True,
                 disabled=disabled_cols,
                 column_config={
@@ -967,7 +984,7 @@ with tab_report:
 
             st.dataframe(
                 dollars,
-                use_container_width=True,
+                use_container_width=False,
                 height=900,
                 hide_index=True,
                 column_config={
