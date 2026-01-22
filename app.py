@@ -1,5 +1,83 @@
+
+def _file_md5(path: str) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def init_meta(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_meta (
+            k TEXT PRIMARY KEY,
+            v TEXT
+        )
+        """
+    )
+    conn.commit()
+
+def get_meta(conn, k: str):
+    init_meta(conn)
+    row = conn.execute("SELECT v FROM app_meta WHERE k = ?", (k,)).fetchone()
+    return row[0] if row else None
+
+def set_meta(conn, k: str, v: str):
+    init_meta(conn)
+    conn.execute("INSERT INTO app_meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
+    conn.commit()
+
+def ensure_mapping_loaded(conn, mapping_path: str):
+    """
+    Ensures sku_mapping is populated from the bundled vendor map Excel.
+    Reloads automatically if the file changes.
+    """
+    init_meta(conn)
+    file_hash = _file_md5(mapping_path) if os.path.exists(mapping_path) else None
+    prev_hash = get_meta(conn, "mapping_hash")
+
+    # If table empty OR file changed, import
+    try:
+        cnt = conn.execute("SELECT COUNT(*) FROM sku_mapping WHERE active = 1").fetchone()[0]
+    except Exception:
+        cnt = 0
+
+    if (cnt == 0) or (file_hash and prev_hash != file_hash):
+        # Re-import mapping (uses existing import function if present)
+        df_map = pd.read_excel(mapping_path)
+        # Normalize expected columns
+        df_map.columns = [str(c).strip() for c in df_map.columns]
+        # Try common names
+        col_retailer = next((c for c in df_map.columns if c.lower() in ["retailer", "store"]), None)
+        col_vendor = next((c for c in df_map.columns if c.lower() in ["vendor", "manufacturer"]), None)
+        col_sku = next((c for c in df_map.columns if c.lower() in ["sku", "vendor sku", "retailer sku"]), None)
+        col_price = next((c for c in df_map.columns if "price" in c.lower()), None)
+
+        if not (col_retailer and col_vendor and col_sku):
+            raise ValueError("Vendor map is missing required columns (Retailer, Vendor, SKU).")
+
+        df_norm = pd.DataFrame({
+            "retailer": df_map[col_retailer].astype(str).str.strip(),
+            "vendor": df_map[col_vendor].astype(str).str.strip(),
+            "sku": df_map[col_sku].astype(str).str.strip(),
+        })
+        if col_price:
+            df_norm["unit_price"] = pd.to_numeric(df_map[col_price], errors="coerce")
+        else:
+            df_norm["unit_price"] = pd.NA
+
+        df_norm = df_norm[df_norm["sku"].ne("") & df_norm["retailer"].ne("")].copy()
+        df_norm["active"] = 1
+
+        # Replace existing mapping
+        conn.execute("DELETE FROM sku_mapping")
+        df_norm.to_sql("sku_mapping", conn, if_exists="append", index=False)
+        conn.commit()
+        if file_hash:
+            set_meta(conn, "mapping_hash", file_hash)
 import streamlit as st
 import pandas as pd
+import hashlib
 import sqlite3
 import json
 from datetime import date, datetime, timedelta
@@ -580,6 +658,7 @@ st.markdown(
 
 conn = get_conn()
 init_db(conn)
+ensure_mapping_loaded(conn, os.path.join(os.path.dirname(__file__), "Vendor-SKU Map.xlsx"))
 booted = bootstrap_default_mapping(conn)
 refreshed_prices = refresh_mapping_from_bundled_if_needed(conn)
 
@@ -816,32 +895,46 @@ with tab_report:
         tot_units[w] = float(u.sum())
         tot_dollars[w] = float((u * unit_price).sum())
 
-    tot_df = pd.DataFrame([tot_units, tot_dollars], index=["Total Units", "Total $"])
-
-    # Round dollar totals for clean display
-    if 'Total $' in tot_df.index:
-        tot_df.loc['Total $'] = pd.to_numeric(tot_df.loc['Total $'], errors='coerce').round(2)
-
+    # Deltas between the last two selected weeks
     if len(week_cols) >= 2:
         prev_w, last_w = week_cols[-2], week_cols[-1]
-        tot_df["Δ Units (Last - Prev)"] = [tot_units[last_w] - tot_units[prev_w], pd.NA]
-        tot_df["Δ $ (Last - Prev)"] = [pd.NA, tot_dollars[last_w] - tot_dollars[prev_w]]
+        delta_units = tot_units[last_w] - tot_units[prev_w]
+        delta_dollars = tot_dollars[last_w] - tot_dollars[prev_w]
     else:
-        tot_df["Δ Units (Last - Prev)"] = [pd.NA, pd.NA]
-        tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
+        delta_units = pd.NA
+        delta_dollars = pd.NA
 
-    # Display copy with currency strings for all $ columns
-    tot_df_display = tot_df.copy()
-    for c in tot_df_display.columns:
-        if "$" in c:
-            tot_df_display[c] = pd.to_numeric(tot_df_display[c], errors="coerce").round(2).apply(fmt_currency_str)
+    st.markdown("#### Charts")
+    if week_cols:
+        units_chart = pd.DataFrame({"Total Units": [tot_units[w] for w in week_cols]}, index=week_cols)
+        dollars_chart = pd.DataFrame({"Total $": [tot_dollars[w] for w in week_cols]}, index=week_cols)
+        c_units, c_dollars = st.columns(2)
+        with c_units:
+            st.caption("Total Units by Week")
+            st.bar_chart(units_chart)
+        with c_dollars:
+            st.caption("Total $ by Week")
+            st.bar_chart(dollars_chart)
+
+    st.markdown("#### Totals Tables")
+    # Units table (numbers only)
+    units_row = {w: tot_units[w] for w in week_cols}
+    units_row["Δ Units (Last - Prev)"] = delta_units
+    units_df = pd.DataFrame([units_row], index=["Total Units"])
     st.dataframe(
-        tot_df_display,
+        units_df,
         use_container_width=False,
-        column_config={
-            **{c: st.column_config.NumberColumn(format="%.0f", width="small") for c in tot_df.columns if "Units" in c},
-            **{c: st.column_config.NumberColumn(format="$%,.2f", width="small") for c in tot_df.columns if "$" in c},
-        }
+        column_config={c: st.column_config.NumberColumn(format="%.0f", width="small") for c in units_df.columns},
+    )
+
+    # Dollars table (currency strings so it never affects the Units table)
+    dollars_row = {w: fmt_currency_str(tot_dollars[w]) for w in week_cols}
+    dollars_row["Δ $ (Last - Prev)"] = fmt_currency_str(delta_dollars) if delta_dollars is not pd.NA else ""
+    dollars_df = pd.DataFrame([dollars_row], index=["Total $"])
+    st.dataframe(
+        dollars_df,
+        use_container_width=False,
+        column_config={c: st.column_config.TextColumn(width="small") for c in dollars_df.columns},
     )
 
 with tab_summary:
