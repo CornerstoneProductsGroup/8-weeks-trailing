@@ -715,21 +715,10 @@ with tab_report:
 
     if not edit_mode:
         view_df = df.copy()
-        def _fmt_currency(x):
-            try:
-                if x is None or (isinstance(x, float) and pd.isna(x)):
-                    return ""
-                v = float(x)
-                return f"${v:,.2f}"
-            except Exception:
-                return ""
-
-        # Force currency display for money columns (robust even with Styler)
-        money_cols = [c for c in view_df.columns if "$" in c]
+        # Ensure money columns are numeric + rounded for stable currency display
+        money_cols = [c for c in view_df.columns if '$' in c]
         for c in money_cols:
-            tmp = pd.to_numeric(view_df[c], errors="coerce").round(2)
-            view_df[c] = tmp.apply(_fmt_currency)
-
+            view_df[c] = pd.to_numeric(view_df[c], errors='coerce').round(2)
 
         def _color_pos_neg(val):
             try:
@@ -743,6 +732,11 @@ with tab_report:
             return ""
 
         styled = view_df.style
+        # Currency formatting for Styler (column_config is ignored for Styler tables)
+        if money_cols:
+            fmt = {c: (lambda x: '' if pd.isna(x) else f'${float(x):,.2f}') for c in money_cols}
+            styled = styled.format(fmt)
+
         # Currency formatting (Streamlit ignores column_config formats for Styler)
         if "Total $ (Units x Price)" in view_df.columns:
             styled = styled.format({"Total $ (Units x Price)": "${:,.2f}"})
