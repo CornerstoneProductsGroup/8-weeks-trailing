@@ -850,18 +850,41 @@ with tab_report:
             if "Total $ (Units x Price)" in view_display.columns:
                 styled = styled.applymap(_color_pos_neg, subset=["Total $ (Units x Price)"])
 
-        st.dataframe(
-            styled,
-            use_container_width=False,
-            height=900,
-            column_config={
-            **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
-                "Vendor": st.column_config.TextColumn(width="medium"),
-                "SKU": st.column_config.TextColumn(width="medium"),
-                "Total $ (Units x Price)": st.column_config.TextColumn(width="small"),
-                "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
-            },
-        )
+        # Render main table + money table side-by-side (avoids mixing currency + unit formatting in one grid)
+        left_col, right_col = st.columns([0.78, 0.22], gap="small")
+
+        # Left: main table (no money column)
+        with left_col:
+            styled_main = styled
+            try:
+                styled_main = styled_main.hide(columns=["Total $ (Units x Price)"])
+            except Exception:
+                pass
+
+            st.dataframe(
+                styled_main,
+                use_container_width=False,
+                height=900,
+                column_config={
+                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
+                    "Vendor": st.column_config.TextColumn(width="medium"),
+                    "SKU": st.column_config.TextColumn(width="medium"),
+                    "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
+                },
+            )
+
+        # Right: money column only (always currency-formatted in view mode)
+        with right_col:
+            money_only = view_display[["Total $ (Units x Price)"]].copy() if "Total $ (Units x Price)" in view_display.columns else pd.DataFrame()
+            st.dataframe(
+                money_only,
+                use_container_width=False,
+                height=900,
+                hide_index=True,
+                column_config={
+                    "Total $ (Units x Price)": st.column_config.TextColumn(width="small"),
+                },
+            )
 
         # Use numeric df for saving (even though display shows formatted currency strings)
         edited = view_df
@@ -872,20 +895,39 @@ with tab_report:
         for c in money_cols_editor:
             df_editor[c] = pd.to_numeric(df_editor[c], errors="coerce").round(2).apply(fmt_currency_str)
 
-        edited = st.data_editor(
-            df_editor,
-            height=900,
-            use_container_width=False,
-            hide_index=True,
-            disabled=disabled_cols,
-            column_config={
-            **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
-                "Vendor": st.column_config.TextColumn(width="medium"),
-                "SKU": st.column_config.TextColumn(width="medium"),
-                "Total $ (Units x Price)": st.column_config.NumberColumn(format="$%,.2f", width="small"),
-                "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
-            }
-        )
+        # Render editor + money column side-by-side
+        left_col, right_col = st.columns([0.78, 0.22], gap="small")
+
+        with left_col:
+            df_editor_main = df_editor.copy()
+            if "Total $ (Units x Price)" in df_editor_main.columns:
+                df_editor_main = df_editor_main.drop(columns=["Total $ (Units x Price)"])
+
+            edited = st.data_editor(
+                df_editor_main,
+                height=900,
+                use_container_width=False,
+                hide_index=True,
+                disabled=disabled_cols,
+                column_config={
+                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
+                    "Vendor": st.column_config.TextColumn(width="medium"),
+                    "SKU": st.column_config.TextColumn(width="medium"),
+                    "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
+                }
+            )
+
+        with right_col:
+            money_only = df[["Total $ (Units x Price)"]].copy() if "Total $ (Units x Price)" in df.columns else pd.DataFrame()
+            if not st.session_state.get("global_edit_mode", True) and "Total $ (Units x Price)" in money_only.columns:
+                money_only["Total $ (Units x Price)"] = pd.to_numeric(money_only["Total $ (Units x Price)"], errors="coerce").round(2).apply(fmt_currency_str)
+            st.dataframe(
+                money_only,
+                use_container_width=False,
+                height=900,
+                hide_index=True,
+                column_config={"Total $ (Units x Price)": st.column_config.TextColumn(width="small")},
+            )
 
     c1, c2 = st.columns([1, 3])
     with c1:
