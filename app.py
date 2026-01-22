@@ -7,6 +7,17 @@ def _file_md5(path: str) -> str:
     return h.hexdigest()
 
 
+REPORT_TABLES_WRAP_CSS = """
+<style>
+/* Wrap the report tables in a max-width container so columns don't spread to far edges */
+.report-table-wrap {
+  max-width: 1250px;
+  margin-left: 0;
+  margin-right: auto;
+}
+</style>
+"""
+
 SPLIT_TABLE_CSS = """
 <style>
 /* Slightly reduce spacing between Streamlit columns */
@@ -640,6 +651,7 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # UI
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+st.markdown(REPORT_TABLES_WRAP_CSS, unsafe_allow_html=True)
 st.markdown(SPLIT_TABLE_CSS2, unsafe_allow_html=True)
 st.markdown(SPLIT_TABLE_CSS, unsafe_allow_html=True)
 st.title(APP_TITLE)
@@ -874,7 +886,8 @@ with tab_report:
                 styled = styled.applymap(_color_pos_neg, subset=["Total $ (Units x Price)"])
 
         # Render main table + Total $ as a separate adjacent table (no scroll-sync; matches Streamlit dark styling)
-        left_col, right_col = st.columns([0.86, 0.14], gap="small")
+        st.markdown('<div class="report-table-wrap">', unsafe_allow_html=True)
+        left_col, right_col = st.columns([6, 1], gap="small")
 
         with left_col:
             styled_main = styled
@@ -906,6 +919,7 @@ with tab_report:
                     "Total $ (Units x Price)": st.column_config.TextColumn(width="small"),
                 },
             )
+        st.markdown('</div>', unsafe_allow_html=True)
 
         # Use numeric df for saving (even though display shows formatted currency strings)
         edited = view_df
@@ -917,7 +931,8 @@ with tab_report:
             df_editor[c] = pd.to_numeric(df_editor[c], errors="coerce").round(2).apply(fmt_currency_str)
 
         # Render editor + Total $ as a separate adjacent table (no scroll-sync)
-        left_col, right_col = st.columns([0.86, 0.14], gap="small")
+        st.markdown('<div class="report-table-wrap">', unsafe_allow_html=True)
+        left_col, right_col = st.columns([6, 1], gap="small")
 
         with left_col:
             df_editor_main = df_editor.copy()
@@ -950,6 +965,7 @@ with tab_report:
                 hide_index=True,
                 column_config={"Total $ (Units x Price)": st.column_config.TextColumn(width="small")},
             )
+        st.markdown('</div>', unsafe_allow_html=True)
 
     c1, c2 = st.columns([1, 3])
     with c1:
