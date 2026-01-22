@@ -13,6 +13,15 @@ SPLIT_TABLE_CSS = """
 div[data-testid="stHorizontalBlock"] { gap: 0.5rem !important; }
 </style>
 """
+
+SPLIT_TABLE_CSS2 = """
+<style>
+div[data-testid="stHorizontalBlock"] { gap: 0.35rem !important; }
+/* Prevent the right-hand column (Total $) from stretching to the far right */
+div[data-testid="stHorizontalBlock"] > div:nth-child(2) { flex: 0 0 210px !important; max-width: 210px !important; }
+div[data-testid="stHorizontalBlock"] > div:nth-child(1) { flex: 1 1 auto !important; }
+</style>
+"""
 def init_meta(conn):
     conn.execute(
         """
@@ -631,6 +640,7 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # UI
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+st.markdown(SPLIT_TABLE_CSS2, unsafe_allow_html=True)
 st.markdown(SPLIT_TABLE_CSS, unsafe_allow_html=True)
 st.title(APP_TITLE)
 
@@ -759,7 +769,7 @@ with st.sidebar:
         if parsed_label:
             st.caption(f"Detected week in filename: {parsed_label}")
 
-        if st.button("Import units into Edit Week", type="primary", use_container_width=True):
+        if st.button("Import units into Edit Week", type="primary", use_container_width=False):
             chosen_start, chosen_end, _ = next((a, b, l) for a, b, l in week_meta if l == edit_week)
 
             wb_up = load_workbook(app_file, data_only=True)
@@ -836,6 +846,11 @@ with tab_report:
 
         # Display copy: format money columns as currency strings (guaranteed $ + commas + 2 decimals)
         view_display = view_df.copy()
+        # Truncate long text in view mode to keep columns narrow (full values remain in DB)
+        if "Vendor" in view_display.columns:
+            view_display["Vendor"] = view_display["Vendor"].astype(str).str.slice(0, 12)
+        if "SKU" in view_display.columns:
+            view_display["SKU"] = view_display["SKU"].astype(str).str.slice(0, 14)
         money_cols = [c for c in view_display.columns if "$" in c]
         for c in money_cols:
             view_display[c] = pd.to_numeric(view_display[c], errors="coerce").round(2).apply(fmt_currency_str)
@@ -870,7 +885,7 @@ with tab_report:
 
             st.dataframe(
                 styled_main,
-                use_container_width=True,
+                use_container_width=False,
                 height=900,
                 column_config={
                     **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
@@ -884,7 +899,7 @@ with tab_report:
             money_only = view_display[["Total $ (Units x Price)"]].copy() if "Total $ (Units x Price)" in view_display.columns else pd.DataFrame()
             st.dataframe(
                 money_only,
-                use_container_width=True,
+                use_container_width=False,
                 height=900,
                 hide_index=True,
                 column_config={
@@ -912,7 +927,7 @@ with tab_report:
             edited = st.data_editor(
                 df_editor_main,
                 height=900,
-                use_container_width=True,
+                use_container_width=False,
                 hide_index=True,
                 disabled=disabled_cols,
                 column_config={
@@ -930,7 +945,7 @@ with tab_report:
                 money_only["Total $ (Units x Price)"] = pd.to_numeric(money_only["Total $ (Units x Price)"], errors="coerce").round(2).apply(fmt_currency_str)
             st.dataframe(
                 money_only,
-                use_container_width=True,
+                use_container_width=False,
                 height=900,
                 hide_index=True,
                 column_config={"Total $ (Units x Price)": st.column_config.TextColumn(width="small")},
