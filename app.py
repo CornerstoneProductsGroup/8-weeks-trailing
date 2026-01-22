@@ -878,6 +878,32 @@ with tab_report:
             view_dollars["Δ $ (Last - Prev)"] = pd.NA
 
         # Currency formatting as strings (isolated to dollars table)
+        # Append TOTAL row to both tables (based on shown rows)
+        week_cols_units = [w for w in display_weeks if w in view_units.columns]
+        tot_units = {w: float(pd.to_numeric(view_units[w], errors='coerce').fillna(0).sum()) for w in week_cols_units}
+        if len(week_cols_units) >= 2:
+            prev_w, last_w = week_cols_units[-2], week_cols_units[-1]
+            delta_units_total = tot_units[last_w] - tot_units[prev_w]
+        else:
+            delta_units_total = pd.NA
+        totals_units_row = {'Vendor': 'TOTAL', 'SKU': ''}
+        totals_units_row.update(tot_units)
+        if 'Δ Units (Last - Prev)' in view_units.columns:
+            totals_units_row['Δ Units (Last - Prev)'] = delta_units_total
+        view_units = pd.concat([view_units, pd.DataFrame([totals_units_row])], ignore_index=True)
+        
+        week_cols_dollars = [w for w in display_weeks if w in view_dollars.columns]
+        tot_dollars = {w: float(pd.to_numeric(view_dollars[w], errors='coerce').fillna(0).sum()) for w in week_cols_dollars}
+        if len(week_cols_dollars) >= 2:
+            prev_w, last_w = week_cols_dollars[-2], week_cols_dollars[-1]
+            delta_dollars_total = tot_dollars[last_w] - tot_dollars[prev_w]
+        else:
+            delta_dollars_total = pd.NA
+        totals_dollars_row = {'Vendor': 'TOTAL', 'SKU': ''}
+        totals_dollars_row.update(tot_dollars)
+        totals_dollars_row['Δ $ (Last - Prev)'] = delta_dollars_total
+        view_dollars = pd.concat([view_dollars, pd.DataFrame([totals_dollars_row])], ignore_index=True)
+        
         for c in [w for w in display_weeks if w in view_dollars.columns] + ["Δ $ (Last - Prev)"]:
             if c in view_dollars.columns:
                 view_dollars[c] = pd.to_numeric(view_dollars[c], errors="coerce").round(2).apply(fmt_currency_str)
@@ -978,6 +1004,19 @@ with tab_report:
             else:
                 dollars["Δ $ (Last - Prev)"] = pd.NA
 
+            # Append TOTAL row (dollars table) based on edited rows
+            week_cols_dollars = [w for w in display_weeks if w in dollars.columns]
+            tot_dollars = {w: float(pd.to_numeric(dollars[w], errors='coerce').fillna(0).sum()) for w in week_cols_dollars}
+            if len(week_cols_dollars) >= 2:
+                prev_w, last_w = week_cols_dollars[-2], week_cols_dollars[-1]
+                delta_dollars_total = tot_dollars[last_w] - tot_dollars[prev_w]
+            else:
+                delta_dollars_total = pd.NA
+            totals_row = {'Vendor': 'TOTAL', 'SKU': ''}
+            totals_row.update(tot_dollars)
+            totals_row['Δ $ (Last - Prev)'] = delta_dollars_total
+            dollars = pd.concat([dollars, pd.DataFrame([totals_row])], ignore_index=True)
+            
             for c in [w for w in display_weeks if w in dollars.columns] + ["Δ $ (Last - Prev)"]:
                 if c in dollars.columns:
                     dollars[c] = pd.to_numeric(dollars[c], errors="coerce").round(2).apply(fmt_currency_str)
@@ -1004,48 +1043,6 @@ with tab_report:
             st.success("Saved.")
     with c2:
         st.caption("Only the selected Edit Week column is editable. Far-right column shows Δ Units (last selected week minus the previous week).")
-
-    st.divider()
-    st.subheader("Totals (shown rows)")
-
-    week_cols = [c for c in display_weeks if c in edited.columns]
-    # unit_price captured above (hidden from table)
-
-    tot_units = {}
-    tot_dollars = {}
-    for w in week_cols:
-        u = pd.to_numeric(edited[w], errors="coerce").fillna(0)
-        tot_units[w] = float(u.sum())
-        tot_dollars[w] = float((u * unit_price).sum())
-
-    # Deltas between the last two selected weeks
-    if len(week_cols) >= 2:
-        prev_w, last_w = week_cols[-2], week_cols[-1]
-        delta_units = tot_units[last_w] - tot_units[prev_w]
-        delta_dollars = tot_dollars[last_w] - tot_dollars[prev_w]
-    else:
-        delta_units = pd.NA
-        delta_dollars = pd.NA
-
-        # Units table (numbers only)
-    units_row = {w: tot_units[w] for w in week_cols}
-    units_row["Δ Units (Last - Prev)"] = delta_units
-    units_df = pd.DataFrame([units_row], index=["Total Units"])
-    st.dataframe(
-        units_df,
-        use_container_width=False,
-        column_config={c: st.column_config.NumberColumn(format="%.0f", width="small") for c in units_df.columns},
-    )
-
-    # Dollars table (currency strings so it never affects the Units table)
-    dollars_row = {w: fmt_currency_str(tot_dollars[w]) for w in week_cols}
-    dollars_row["Δ $ (Last - Prev)"] = fmt_currency_str(delta_dollars) if delta_dollars is not pd.NA else ""
-    dollars_df = pd.DataFrame([dollars_row], index=["Total $"])
-    st.dataframe(
-        dollars_df,
-        use_container_width=False,
-        column_config={c: st.column_config.TextColumn(width="small") for c in dollars_df.columns},
-    )
 
 with tab_summary:
     st.subheader("Summary by retailer and week")
