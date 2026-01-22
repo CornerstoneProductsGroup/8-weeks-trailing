@@ -7,6 +7,46 @@ def _file_md5(path: str) -> str:
     return h.hexdigest()
 
 
+# ---------- AUTOLOAD_VENDOR_MAP ----------
+# Load Vendor-SKU pricing map automatically from local file on startup
+def autoload_vendor_map(conn):
+    import pandas as pd, os
+    map_path = os.path.join(os.path.dirname(__file__), "Vendor-SKU Map.xlsx")
+    if not os.path.exists(map_path):
+        return
+    df = pd.read_excel(map_path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    df = df.rename(columns={
+        "retailer": "retailer",
+        "vendor": "vendor",
+        "sku": "sku",
+        "price": "unit_price",
+        "unit price": "unit_price",
+    })
+    df = df[["retailer","vendor","sku","unit_price"]].dropna()
+    df["retailer"] = df["retailer"].astype(str).str.strip()
+    df["vendor"] = df["vendor"].astype(str).str.strip()
+    df["sku"] = df["sku"].astype(str).str.strip()
+    df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
+
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS sku_mapping (
+            retailer TEXT,
+            vendor TEXT,
+            sku TEXT,
+            unit_price REAL,
+            UNIQUE(retailer, vendor, sku)
+        )
+    """)
+    for _,r in df.iterrows():
+        cur.execute(
+            "INSERT OR REPLACE INTO sku_mapping (retailer,vendor,sku,unit_price) VALUES (?,?,?,?)",
+            (r["retailer"], r["vendor"], r["sku"], float(r["unit_price"]))
+        )
+    conn.commit()
+# ---------- END AUTOLOAD_VENDOR_MAP ----------
+
 COMPACT_TABLE_CSS = """
 <style>
 /* Reduce padding inside Streamlit dataframes */
