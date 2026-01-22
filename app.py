@@ -81,6 +81,7 @@ def ensure_mapping_loaded(conn, mapping_path: str):
         if file_hash:
             set_meta(conn, "mapping_hash", file_hash)
 import streamlit as st
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 import pandas as pd
 import hashlib
 import sqlite3
@@ -208,6 +209,39 @@ def fmt_currency_str(x):
         return ""
     s = f"${abs(v):,.2f}"
     return f"({s})" if v < 0 else s
+
+
+# --- AG Grid JS helpers (for perfect scroll sync + currency formatting) ---
+JS_CURRENCY_FMT = JsCode("""
+function(params) {
+  if (params.value === null || params.value === undefined || params.value === "") { return ""; }
+  const v = Number(params.value);
+  if (isNaN(v)) { return params.value; }
+  const abs = Math.abs(v);
+  const s = "$" + abs.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  return v < 0 ? "(" + s + ")" : s;
+}
+""")
+
+JS_NUMBER0_FMT = JsCode("""
+function(params) {
+  if (params.value === null || params.value === undefined || params.value === "") { return ""; }
+  const v = Number(params.value);
+  if (isNaN(v)) { return params.value; }
+  return v.toLocaleString(undefined, {maximumFractionDigits: 0});
+}
+""")
+
+JS_POSNEG_STYLE = JsCode("""
+function(params) {
+  if (params.value === null || params.value === undefined || params.value === "") { return {}; }
+  const v = Number(String(params.value).replace("(","").replace(")","").replace("$","").replace(/,/g,""));
+  if (isNaN(v)) { return {}; }
+  if (v > 0) { return {color:"#1f8b4c", fontWeight:"600"}; }
+  if (v < 0) { return {color:"#c92a2a", fontWeight:"600"}; }
+  return {};
+}
+""")
 
 # -----------------------------
 # DB helpers
@@ -850,44 +884,48 @@ with tab_report:
             if "Total $ (Units x Price)" in view_display.columns:
                 styled = styled.applymap(_color_pos_neg, subset=["Total $ (Units x Price)"])
 
-        # Render main table + money table side-by-side (avoids mixing currency + unit formatting in one grid)
-        left_col, right_col = st.columns([0.78, 0.22], gap="small")
+        # Single-grid view (perfect vertical scroll sync). Money formatting handled by AG Grid.
+        grid_df = view_df.copy()
+        # ensure numeric types for formatters
+        money_cols = [c for c in grid_df.columns if "$" in c]
+        for c in money_cols:
+            grid_df[c] = pd.to_numeric(grid_df[c], errors="coerce").round(2)
+        for w in display_weeks:
+            if w in grid_df.columns:
+                grid_df[w] = pd.to_numeric(grid_df[w], errors="coerce")
 
-        # Left: main table (no money column)
-        with left_col:
-            styled_main = styled
-            try:
-                styled_main = styled_main.hide(columns=["Total $ (Units x Price)"])
-            except Exception:
-                pass
+        gb = GridOptionsBuilder.from_dataframe(grid_df)
+        gb.configure_default_column(resizable=True, sortable=True, filter=True)
+        gb.configure_grid_options(domLayout="normal")
+        gb.configure_side_bar(False)
 
-            st.dataframe(
-                styled_main,
-                use_container_width=False,
-                height=900,
-                column_config={
-                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
-                    "Vendor": st.column_config.TextColumn(width="medium"),
-                    "SKU": st.column_config.TextColumn(width="medium"),
-                    "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
-                },
-            )
+        gb.configure_column("Vendor", pinned="left", width=160)
+        gb.configure_column("SKU", pinned="left", width=140)
 
-        # Right: money column only (always currency-formatted in view mode)
-        with right_col:
-            money_only = view_display[["Total $ (Units x Price)"]].copy() if "Total $ (Units x Price)" in view_display.columns else pd.DataFrame()
-            st.dataframe(
-                money_only,
-                use_container_width=False,
-                height=900,
-                hide_index=True,
-                column_config={
-                    "Total $ (Units x Price)": st.column_config.TextColumn(width="small"),
-                },
-            )
+        for w in display_weeks:
+            if w in grid_df.columns:
+                gb.configure_column(w, type=["numericColumn"], valueFormatter=JS_NUMBER0_FMT, width=90)
 
-        # Use numeric df for saving (even though display shows formatted currency strings)
+        if "Δ Units (Last - Prev)" in grid_df.columns:
+            gb.configure_column("Δ Units (Last - Prev)", type=["numericColumn"], valueFormatter=JS_NUMBER0_FMT, cellStyle=JS_POSNEG_STYLE, width=120)
+
+        if "Total $ (Units x Price)" in grid_df.columns:
+            gb.configure_column("Total $ (Units x Price)", pinned="right", valueFormatter=JS_CURRENCY_FMT, cellStyle=JS_POSNEG_STYLE, width=140)
+
+        grid_options = gb.build()
+
+        AgGrid(
+            grid_df,
+            gridOptions=grid_options,
+            height=900,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            update_mode=GridUpdateMode.NO_UPDATE,
+            allow_unsafe_jscode=True,
+            theme="alpine",
+        )
+
         edited = view_df
+
     else:
         # Editor copy: keep weeks numeric for editing, but show money columns formatted
         df_editor = df.copy()
@@ -895,39 +933,54 @@ with tab_report:
         for c in money_cols_editor:
             df_editor[c] = pd.to_numeric(df_editor[c], errors="coerce").round(2).apply(fmt_currency_str)
 
-        # Render editor + money column side-by-side
-        left_col, right_col = st.columns([0.78, 0.22], gap="small")
+        # Single-grid editor (perfect vertical scroll sync). Week columns editable, money column pinned right.
+        grid_df = df.copy()
+        # ensure numeric for formatters
+        money_cols = [c for c in grid_df.columns if "$" in c]
+        for c in money_cols:
+            grid_df[c] = pd.to_numeric(grid_df[c], errors="coerce").round(2)
+        for w in display_weeks:
+            if w in grid_df.columns:
+                grid_df[w] = pd.to_numeric(grid_df[w], errors="coerce")
 
-        with left_col:
-            df_editor_main = df_editor.copy()
-            if "Total $ (Units x Price)" in df_editor_main.columns:
-                df_editor_main = df_editor_main.drop(columns=["Total $ (Units x Price)"])
+        gb = GridOptionsBuilder.from_dataframe(grid_df)
+        gb.configure_default_column(resizable=True, sortable=True, filter=True)
+        gb.configure_grid_options(domLayout="normal")
+        gb.configure_side_bar(False)
 
-            edited = st.data_editor(
-                df_editor_main,
-                height=900,
-                use_container_width=False,
-                hide_index=True,
-                disabled=disabled_cols,
-                column_config={
-                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
-                    "Vendor": st.column_config.TextColumn(width="medium"),
-                    "SKU": st.column_config.TextColumn(width="medium"),
-                    "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
-                }
-            )
+        gb.configure_column("Vendor", pinned="left", editable=False, width=160)
+        gb.configure_column("SKU", pinned="left", editable=False, width=140)
 
-        with right_col:
-            money_only = df[["Total $ (Units x Price)"]].copy() if "Total $ (Units x Price)" in df.columns else pd.DataFrame()
-            if not st.session_state.get("global_edit_mode", True) and "Total $ (Units x Price)" in money_only.columns:
-                money_only["Total $ (Units x Price)"] = pd.to_numeric(money_only["Total $ (Units x Price)"], errors="coerce").round(2).apply(fmt_currency_str)
-            st.dataframe(
-                money_only,
-                use_container_width=False,
-                height=900,
-                hide_index=True,
-                column_config={"Total $ (Units x Price)": st.column_config.TextColumn(width="small")},
-            )
+        # Make only the edit_week column editable (numeric)
+        for w in display_weeks:
+            if w in grid_df.columns:
+                gb.configure_column(
+                    w,
+                    type=["numericColumn"],
+                    editable=(w == edit_week),
+                    valueFormatter=JS_NUMBER0_FMT,
+                    width=90
+                )
+
+        if "Δ Units (Last - Prev)" in grid_df.columns:
+            gb.configure_column("Δ Units (Last - Prev)", editable=False, valueFormatter=JS_NUMBER0_FMT, cellStyle=JS_POSNEG_STYLE, width=120)
+
+        if "Total $ (Units x Price)" in grid_df.columns:
+            gb.configure_column("Total $ (Units x Price)", pinned="right", editable=False, valueFormatter=JS_CURRENCY_FMT, cellStyle=JS_POSNEG_STYLE, width=140)
+
+        grid_options = gb.build()
+
+        grid_resp = AgGrid(
+            grid_df,
+            gridOptions=grid_options,
+            height=900,
+            data_return_mode=DataReturnMode.AS_INPUT,
+            update_mode=GridUpdateMode.VALUE_CHANGED,
+            allow_unsafe_jscode=True,
+            theme="alpine",
+        )
+
+        edited = pd.DataFrame(grid_resp["data"])
 
     c1, c2 = st.columns([1, 3])
     with c1:
