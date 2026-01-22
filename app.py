@@ -114,6 +114,18 @@ def weeks_for_months(week_meta, months_selected):
             labels.append(lbl)
     return labels
 
+
+def fmt_currency_str(x):
+    """Format a number like $3,234.00 and negatives like ($1,174.95)."""
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return ""
+        v = float(x)
+    except Exception:
+        return ""
+    s = f"${abs(v):,.2f}"
+    return f"({s})" if v < 0 else s
+
 # -----------------------------
 # DB helpers
 # -----------------------------
@@ -720,9 +732,14 @@ with tab_report:
         for c in money_cols:
             view_df[c] = pd.to_numeric(view_df[c], errors='coerce').round(2)
 
+        # Build display copy with currency strings (guaranteed $ + commas + 2 decimals)
+        view_display = view_df.copy()
+        for c in money_cols:
+            view_display[c] = view_display[c].apply(fmt_currency_str)
+
         def _color_pos_neg(val):
             try:
-                v = float(str(val).replace('$','').replace(',',''))
+                v = float(str(val).replace('(','').replace(')','').replace('$','').replace(',',''))
             except Exception:
                 return ""
             if v > 0:
@@ -731,15 +748,7 @@ with tab_report:
                 return "color: #c92a2a; font-weight: 600;"
             return ""
 
-        styled = view_df.style
-        # Currency formatting for Styler (column_config is ignored for Styler tables)
-        if money_cols:
-            fmt = {c: (lambda x: '' if pd.isna(x) else f'${float(x):,.2f}') for c in money_cols}
-            styled = styled.format(fmt)
-
-        # Currency formatting (Streamlit ignores column_config formats for Styler)
-        if "Total $ (Units x Price)" in view_df.columns:
-            styled = styled.format({"Total $ (Units x Price)": "${:,.2f}"})
+        styled = view_display.style
 
         if color_deltas:
             if "Δ Units (Last - Prev)" in view_df.columns:
@@ -811,8 +820,13 @@ with tab_report:
     else:
         tot_df["Δ Units (Last - Prev)"] = [pd.NA, pd.NA]
         tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
+    tot_df_display = tot_df.copy()
+    for c in tot_df_display.columns:
+        if '$' in c:
+            tot_df_display[c] = tot_df_display[c].apply(fmt_currency_str)
+
     st.dataframe(
-        tot_df,
+        tot_df_display,
         use_container_width=False,
         column_config={
             **{c: st.column_config.NumberColumn(format="%.0f", width="small") for c in tot_df.columns if "Units" in c},
@@ -884,7 +898,11 @@ with tab_summary:
                 col_cfg[f"{lbl} Units"] = st.column_config.NumberColumn(format="%.0f", width="small")
                 col_cfg[f"{lbl} $"] = st.column_config.NumberColumn(format="$%,.2f", width="small")
 
-            st.dataframe(out, use_container_width=False, column_config=col_cfg)
+            out_display = out.copy()
+            for c in out_display.columns:
+                if c.endswith(' $'):
+                    out_display[c] = out_display[c].apply(fmt_currency_str)
+            st.dataframe(out_display, use_container_width=False, column_config=col_cfg)
 
             st.divider()
             st.subheader("Totals across selected weeks")
@@ -897,8 +915,10 @@ with tab_summary:
                 "Total $ (Selected Weeks)": out[dol_cols].sum(axis=1),
             }).sort_values("Total $ (Selected Weeks)", ascending=False)
 
+            totals_display = totals.copy()
+            totals_display['Total $ (Selected Weeks)'] = totals_display['Total $ (Selected Weeks)'].apply(fmt_currency_str)
             st.dataframe(
-                totals,
+                totals_display,
                 use_container_width=False,
                 column_config={
                     "Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),
@@ -1070,8 +1090,13 @@ with tab_total_sku:
                     "Total $": "Total $"
                 })[["SKU", "Vendor", "Total Units", "Unit Price", "Total $"]]
 
+                out_display = out.copy()
+                if 'Unit Price' in out_display.columns:
+                    out_display['Unit Price'] = out_display['Unit Price'].apply(fmt_currency_str)
+                if 'Total $' in out_display.columns:
+                    out_display['Total $'] = out_display['Total $'].apply(fmt_currency_str)
                 st.dataframe(
-                    out,
+                    out_display,
                     use_container_width=False,
                     column_config={
                         "Unit Price": st.column_config.NumberColumn(format="$%,.2f", width="small"),
