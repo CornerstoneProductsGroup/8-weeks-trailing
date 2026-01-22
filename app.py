@@ -829,11 +829,12 @@ with tab_report:
     else:
         tot_df["Δ Units (Last - Prev)"] = [pd.NA, pd.NA]
         tot_df["Δ $ (Last - Prev)"] = [pd.NA, pd.NA]
-        tot_df_display = tot_df.copy()
+
+    # Display copy with currency strings for all $ columns
+    tot_df_display = tot_df.copy()
     for c in tot_df_display.columns:
         if "$" in c:
             tot_df_display[c] = pd.to_numeric(tot_df_display[c], errors="coerce").round(2).apply(fmt_currency_str)
-
     st.dataframe(
         tot_df_display,
         use_container_width=False,
