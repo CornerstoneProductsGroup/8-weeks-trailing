@@ -963,15 +963,20 @@ with tab_report:
                 view_dollars[c] = pd.to_numeric(view_dollars[c], errors="coerce").round(2).apply(fmt_currency_str)
 
         def _color_pos_neg(val):
+            s = str(val)
             try:
-                v = float(str(val).replace('(','').replace(')','').replace('$','').replace(',',''))
+                neg = s.strip().startswith('(') and s.strip().endswith(')')
+                s2 = s.replace('(', '').replace(')', '').replace('$', '').replace(',', '')
+                v = float(s2) if s2.strip() != '' else 0.0
+                if neg:
+                    v = -abs(v)
             except Exception:
-                return ""
+                return ''
             if v > 0:
-                return "color: #1f8b4c; font-weight: 600;"
+                return 'color: #1f8b4c; font-weight: 600;'
             if v < 0:
-                return "color: #c92a2a; font-weight: 600;"
-            return ""
+                return 'color: #c92a2a; font-weight: 600;'
+            return ''
 
         # Render two tables side-by-side
         left_col, right_col = st.columns([1, 1], gap="small")
@@ -1098,114 +1103,47 @@ with tab_report:
     with c2:
         st.caption("Only the selected Edit Week column is editable. Far-right column shows Δ Units (last selected week minus the previous week).")
 
-with tab_summary:
-    st.subheader("Summary by retailer and week")
-    st.caption("Shows total units and total $ for each retailer for the weeks you selected in the sidebar. Totals match the Report tab totals logic, but include ALL SKUs.")
 
-    label_to_start = {lbl: start.isoformat() for lbl, start in [(l, s) for s, _, l in week_meta]}
-    # keep only selected labels that exist
-    selected_labels = [lbl for lbl in display_weeks if lbl in label_to_start]
-    selected_starts = [label_to_start[lbl] for lbl in selected_labels]
+with tab_summary:
+    st.subheader("Summary")
+    st.caption("Totals per retailer by week (Sales $).")
+
+    # Build list of selected weeks (labels) from the current selector
+    selected_labels = display_weeks
 
     if not selected_labels:
-        st.info("Select at least one week in the sidebar to build the summary.")
+        st.info("Select at least one week.")
     else:
-        mapping_all = pd.read_sql_query(
-            """
-            SELECT retailer, sku, unit_price
-            FROM sku_mapping
-            WHERE active = 1
-            """,
-            conn
+        # The existing helper builds 'out' with columns like '<label> Units' and '<label> $'
+        out, totals = build_summary_tables(conn, week_meta, selected_labels)
+
+        out_sales = pd.DataFrame(index=out.index)
+        for lbl in selected_labels:
+            out_sales[lbl] = pd.to_numeric(out.get(f"{lbl} $", 0), errors="coerce").fillna(0).round(2).apply(fmt_currency_str)
+
+        st.dataframe(
+            out_sales,
+            use_container_width=True,
+            height=650,
+            column_config={lbl: st.column_config.TextColumn(width="small") for lbl in selected_labels},
         )
-        mapping_all["unit_price"] = pd.to_numeric(mapping_all["unit_price"], errors="coerce").fillna(0)
-
-        placeholders = ",".join(["?"] * len(selected_starts))
-        wk = pd.read_sql_query(
-            f"""
-            SELECT week_start, retailer, sku, units_auto, units_override
-            FROM weekly_results
-            WHERE week_start IN ({placeholders})
-            """,
-            conn,
-            params=selected_starts
-        )
-
-        if wk.empty:
-            st.info("No unit data found for the selected weeks yet.")
-        else:
-            wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
-            wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
-
-            dfm = wk.merge(mapping_all, on=["retailer", "sku"], how="left")
-            dfm["unit_price"] = pd.to_numeric(dfm["unit_price"], errors="coerce").fillna(0)
-            dfm["Dollars"] = dfm["Units"] * dfm["unit_price"]
-
-            agg = dfm.groupby(["retailer", "week_start"], as_index=False).agg(
-                total_units=("Units", "sum"),
-                total_dollars=("Dollars", "sum"),
-            )
-
-            all_retailers = sorted(dfm["retailer"].unique().tolist())
-            out = pd.DataFrame({"Retailer": all_retailers}).set_index("Retailer")
-
-            for lbl in selected_labels:
-                ws = label_to_start[lbl]
-                sub = agg[agg["week_start"] == ws].set_index("retailer")
-                out[f"{lbl} Units"] = sub["total_units"]
-                out[f"{lbl} $"] = sub["total_dollars"]
-
-            out = out.fillna(0)
-
-            col_cfg = {}
-            for lbl in selected_labels:
-                col_cfg[f"{lbl} Units"] = st.column_config.NumberColumn(format="%.0f", width="small")
-                col_cfg[f"{lbl} $"] = st.column_config.NumberColumn(format="$%,.2f", width="small")
-
-            # Build separate summary tables: Units and Sales ($)
-            out_units = pd.DataFrame(index=out.index)
-            out_sales = pd.DataFrame(index=out.index)
-
-            for lbl in selected_labels:
-                out_units[lbl] = pd.to_numeric(out.get(f"{lbl} Units", 0), errors="coerce").fillna(0)
-                out_sales[lbl] = pd.to_numeric(out.get(f"{lbl} $", 0), errors="coerce").fillna(0).round(2).apply(fmt_currency_str)
-
-            left_col, right_col = st.columns([1, 1], gap="small")
-
-            with left_col:
-                st.markdown("#### Units")
-                st.dataframe(
-                    out_units,
-                    use_container_width=True,
-                    height=650,
-                    column_config={lbl: st.column_config.NumberColumn(format="%.0f", width="small") for lbl in selected_labels},
-                )
-
-            with right_col:
-                st.markdown("#### Sales ($)")
-                st.dataframe(
-                    out_sales,
-                    use_container_width=True,
-                    height=650,
-                    column_config={lbl: st.column_config.TextColumn(width="small") for lbl in selected_labels},
-                )
 with tab_top_retailer:
-    st.subheader("Top 10 items per retailer (by Units)")
-    st.caption("Uses the weeks selected in 'Weeks to display'. Totals are summed across those weeks.")
+    st.subheader("Top 10 by Retailer")
+    st.caption("Two views per retailer: Units (left) and Sales ($) (right), based on the selected weeks.")
 
     label_to_start = {lbl: start.isoformat() for start, _, lbl in week_meta}
     selected_starts = [label_to_start[lbl] for lbl in display_weeks if lbl in label_to_start]
 
     if not selected_starts:
-        st.info("Select at least one week to compute top sellers.")
+        st.info("Select at least one week.")
     else:
         placeholders = ",".join(["?"] * len(selected_starts))
         wk = pd.read_sql_query(
-            f"""
+            f'''
             SELECT week_start, retailer, sku, units_auto, units_override
             FROM weekly_results
             WHERE week_start IN ({placeholders})
-            """,
+            ''',
             conn,
             params=selected_starts
         )
@@ -1216,31 +1154,63 @@ with tab_top_retailer:
             wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
             wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
 
-            agg = wk.groupby(["retailer", "sku"], as_index=False)["Units"].sum()
-
             mapping_all = pd.read_sql_query(
-                """
-                SELECT retailer, vendor, sku
+                '''
+                SELECT retailer, vendor, sku, unit_price
                 FROM sku_mapping
                 WHERE active = 1
-                """,
+                ''',
                 conn
             )
-            dfm = agg.merge(mapping_all, on=["retailer", "sku"], how="left")
-            dfm["vendor"] = dfm["vendor"].fillna("Unknown")
+            mapping_all["unit_price"] = pd.to_numeric(mapping_all["unit_price"], errors="coerce").fillna(0)
 
-            for ret in sorted(dfm["retailer"].unique().tolist()):
-                st.markdown(f"### {ret}")
-                sub = dfm[dfm["retailer"] == ret].copy()
+            dfm = wk.merge(mapping_all, on=["retailer", "sku"], how="left")
+            dfm["unit_price"] = pd.to_numeric(dfm["unit_price"], errors="coerce").fillna(0)
+            dfm["Sales"] = (dfm["Units"] * dfm["unit_price"]).round(2)
+
+            agg = dfm.groupby(["retailer", "sku"], as_index=False).agg(
+                Units=("Units", "sum"),
+                Sales=("Sales", "sum"),
+            )
+
+            retailers = sorted(agg["retailer"].dropna().unique().tolist())
+            if not retailers:
+                st.info("No retailers found.")
+            else:
+                r = st.selectbox("Retailer", retailers, key="top10_retailer_select")
+                sub = agg[agg["retailer"] == r].copy()
                 top = sub.sort_values("Units", ascending=False).head(10)
 
-                out = top.rename(columns={
-                    "vendor": "Vendor",
-                    "sku": "SKU",
-                    "Units": "Total Units (Selected Weeks)"
-                })[["SKU", "Vendor", "Total Units (Selected Weeks)"]]
-                st.dataframe(out, use_container_width=True, column_config={"Total Units (Selected Weeks)": st.column_config.NumberColumn(format="%.0f", width="small"),"SKU": st.column_config.TextColumn(width="small"),"Vendor": st.column_config.TextColumn(width="small"),})
+                left_col, right_col = st.columns([1, 1], gap="small")
 
+                with left_col:
+                    st.markdown("#### Top 10 — Units")
+                    t_units = top[["sku", "Units"]].rename(columns={"sku": "SKU"})
+                    st.dataframe(
+                        t_units,
+                        use_container_width=True,
+                        height=700,
+                        hide_index=True,
+                        column_config={
+                            "SKU": st.column_config.TextColumn(width="small"),
+                            "Units": st.column_config.NumberColumn(format="%.0f", width="small"),
+                        },
+                    )
+
+                with right_col:
+                    st.markdown("#### Top 10 — Sales ($)")
+                    t_sales = top[["sku", "Sales"]].rename(columns={"sku": "SKU"})
+                    t_sales["Sales"] = pd.to_numeric(t_sales["Sales"], errors="coerce").round(2).apply(fmt_currency_str)
+                    st.dataframe(
+                        t_sales,
+                        use_container_width=True,
+                        height=700,
+                        hide_index=True,
+                        column_config={
+                            "SKU": st.column_config.TextColumn(width="small"),
+                            "Sales": st.column_config.TextColumn(width="small"),
+                        },
+                    )
 
 with tab_top_vendor:
     st.subheader("Top 5 SKUs per Vendor (across ALL retailers)")
@@ -1304,8 +1274,9 @@ with tab_top_vendor:
 
             with left_col:
                 st.markdown("#### Top 5 per Vendor — Units")
+                t = top_units.rename(columns={"vendor": "Vendor", "retailer": "Retailer", "sku": "SKU"})[["Rank","Vendor","Retailer","SKU","Units"]]
                 st.dataframe(
-                    top_units.rename(columns={"vendor": "Vendor", "retailer": "Retailer", "sku": "SKU"}),
+                    t,
                     use_container_width=True,
                     height=700,
                     hide_index=True,
@@ -1315,14 +1286,14 @@ with tab_top_vendor:
                         "Retailer": st.column_config.TextColumn(width="small"),
                         "SKU": st.column_config.TextColumn(width="small"),
                         "Units": st.column_config.NumberColumn(format="%.0f", width="small"),
-                        "Sales": st.column_config.TextColumn(width="small"),
                     },
                 )
 
             with right_col:
                 st.markdown("#### Top 5 per Vendor — Sales ($)")
+                t = top_sales_disp.rename(columns={"vendor": "Vendor", "retailer": "Retailer", "sku": "SKU"})[["Rank","Vendor","Retailer","SKU","Sales"]]
                 st.dataframe(
-                    top_sales_disp.rename(columns={"vendor": "Vendor", "retailer": "Retailer", "sku": "SKU"}),
+                    t,
                     use_container_width=True,
                     height=700,
                     hide_index=True,
@@ -1331,9 +1302,6 @@ with tab_top_vendor:
                         "Vendor": st.column_config.TextColumn(width="small"),
                         "Retailer": st.column_config.TextColumn(width="small"),
                         "SKU": st.column_config.TextColumn(width="small"),
-                        "Units": st.column_config.NumberColumn(format="%.0f", width="small"),
                         "Sales": st.column_config.TextColumn(width="small"),
                     },
                 )
-
-
