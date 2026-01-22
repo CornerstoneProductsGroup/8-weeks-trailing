@@ -7,30 +7,10 @@ def _file_md5(path: str) -> str:
     return h.hexdigest()
 
 
-REPORT_TABLES_WRAP_CSS = """
-<style>
-/* Wrap the report tables in a max-width container so columns don't spread to far edges */
-.report-table-wrap {
-  max-width: 1250px;
-  margin-left: 0;
-  margin-right: auto;
-}
-</style>
-"""
-
 SPLIT_TABLE_CSS = """
 <style>
 /* Slightly reduce spacing between Streamlit columns */
 div[data-testid="stHorizontalBlock"] { gap: 0.5rem !important; }
-</style>
-"""
-
-SPLIT_TABLE_CSS2 = """
-<style>
-div[data-testid="stHorizontalBlock"] { gap: 0.35rem !important; }
-/* Prevent the right-hand column (Total $) from stretching to the far right */
-div[data-testid="stHorizontalBlock"] > div:nth-child(2) { flex: 0 0 210px !important; max-width: 210px !important; }
-div[data-testid="stHorizontalBlock"] > div:nth-child(1) { flex: 1 1 auto !important; }
 </style>
 """
 def init_meta(conn):
@@ -651,8 +631,6 @@ def save_edit_week(conn, retailer: str, week_start: date, week_end: date, edit_l
 # UI
 # -----------------------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
-st.markdown(REPORT_TABLES_WRAP_CSS, unsafe_allow_html=True)
-st.markdown(SPLIT_TABLE_CSS2, unsafe_allow_html=True)
 st.markdown(SPLIT_TABLE_CSS, unsafe_allow_html=True)
 st.title(APP_TITLE)
 
@@ -781,7 +759,7 @@ with st.sidebar:
         if parsed_label:
             st.caption(f"Detected week in filename: {parsed_label}")
 
-        if st.button("Import units into Edit Week", type="primary", use_container_width=False):
+        if st.button("Import units into Edit Week", type="primary", use_container_width=True):
             chosen_start, chosen_end, _ = next((a, b, l) for a, b, l in week_meta if l == edit_week)
 
             wb_up = load_workbook(app_file, data_only=True)
@@ -856,16 +834,36 @@ with tab_report:
     if not edit_mode:
         view_df = df.copy()
 
-        # Display copy: format money columns as currency strings (guaranteed $ + commas + 2 decimals)
-        view_display = view_df.copy()
-        # Truncate long text in view mode to keep columns narrow (full values remain in DB)
-        if "Vendor" in view_display.columns:
-            view_display["Vendor"] = view_display["Vendor"].astype(str).str.slice(0, 12)
-        if "SKU" in view_display.columns:
-            view_display["SKU"] = view_display["SKU"].astype(str).str.slice(0, 14)
-        money_cols = [c for c in view_display.columns if "$" in c]
-        for c in money_cols:
-            view_display[c] = pd.to_numeric(view_display[c], errors="coerce").round(2).apply(fmt_currency_str)
+        # Units table (numeric)
+        view_units = view_df.copy()
+
+        # Dollars table: Vendor, SKU + $ per selected week (units * unit_price)
+        view_dollars = pd.DataFrame({
+            "Vendor": view_units.get("Vendor", ""),
+            "SKU": view_units.get("SKU", ""),
+        })
+        for w in display_weeks:
+            if w in view_units.columns:
+                u = pd.to_numeric(view_units[w], errors="coerce").fillna(0)
+                view_dollars[w] = (u * unit_price).round(2)
+
+        # Δ $ between last two weeks
+        if len(display_weeks) >= 2:
+            prev_w, last_w = display_weeks[-2], display_weeks[-1]
+            if prev_w in view_dollars.columns and last_w in view_dollars.columns:
+                view_dollars["Δ $ (Last - Prev)"] = (
+                    pd.to_numeric(view_dollars[last_w], errors="coerce").fillna(0)
+                    - pd.to_numeric(view_dollars[prev_w], errors="coerce").fillna(0)
+                ).round(2)
+            else:
+                view_dollars["Δ $ (Last - Prev)"] = pd.NA
+        else:
+            view_dollars["Δ $ (Last - Prev)"] = pd.NA
+
+        # Currency formatting as strings (isolated to dollars table)
+        for c in [w for w in display_weeks if w in view_dollars.columns] + ["Δ $ (Last - Prev)"]:
+            if c in view_dollars.columns:
+                view_dollars[c] = pd.to_numeric(view_dollars[c], errors="coerce").round(2).apply(fmt_currency_str)
 
         def _color_pos_neg(val):
             try:
@@ -878,96 +876,110 @@ with tab_report:
                 return "color: #c92a2a; font-weight: 600;"
             return ""
 
-        styled = view_display.style
-        if color_deltas:
-            if "Δ Units (Last - Prev)" in view_display.columns:
-                styled = styled.applymap(_color_pos_neg, subset=["Δ Units (Last - Prev)"])
-            if "Total $ (Units x Price)" in view_display.columns:
-                styled = styled.applymap(_color_pos_neg, subset=["Total $ (Units x Price)"])
-
-        # Render main table + Total $ as a separate adjacent table (no scroll-sync; matches Streamlit dark styling)
-        st.markdown('<div class="report-table-wrap">', unsafe_allow_html=True)
-        left_col, right_col = st.columns([6, 1], gap="small")
+        # Render two tables side-by-side
+        left_col, right_col = st.columns([1, 1], gap="small")
 
         with left_col:
-            styled_main = styled
-            try:
-                styled_main = styled_main.hide(columns=["Total $ (Units x Price)"])
-            except Exception:
-                pass
-
+            styled_units = view_units.style
+            if color_deltas and "Δ Units (Last - Prev)" in view_units.columns:
+                styled_units = styled_units.applymap(_color_pos_neg, subset=["Δ Units (Last - Prev)"])
             st.dataframe(
-                styled_main,
-                use_container_width=False,
+                styled_units,
+                use_container_width=True,
                 height=900,
                 column_config={
-                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
                     "Vendor": st.column_config.TextColumn(width="small"),
                     "SKU": st.column_config.TextColumn(width="small"),
+                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks if w in view_units.columns},
                     "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
                 },
             )
 
         with right_col:
-            money_only = view_display[["Total $ (Units x Price)"]].copy() if "Total $ (Units x Price)" in view_display.columns else pd.DataFrame()
+            styled_dollars = view_dollars.style
+            if color_deltas and "Δ $ (Last - Prev)" in view_dollars.columns:
+                styled_dollars = styled_dollars.applymap(_color_pos_neg, subset=["Δ $ (Last - Prev)"])
             st.dataframe(
-                money_only,
-                use_container_width=False,
+                styled_dollars,
+                use_container_width=True,
                 height=900,
                 hide_index=True,
                 column_config={
-                    "Total $ (Units x Price)": st.column_config.TextColumn(width="small"),
+                    "Vendor": st.column_config.TextColumn(width="small"),
+                    "SKU": st.column_config.TextColumn(width="small"),
+                    **{w: st.column_config.TextColumn(width="small") for w in display_weeks if w in view_dollars.columns},
+                    "Δ $ (Last - Prev)": st.column_config.TextColumn(width="small"),
                 },
             )
-        st.markdown('</div>', unsafe_allow_html=True)
 
-        # Use numeric df for saving (even though display shows formatted currency strings)
         edited = view_df
-    else:
-        # Editor copy: keep weeks numeric for editing, but show money columns formatted
-        df_editor = df.copy()
-        money_cols_editor = [c for c in df_editor.columns if "$" in c]
-        for c in money_cols_editor:
-            df_editor[c] = pd.to_numeric(df_editor[c], errors="coerce").round(2).apply(fmt_currency_str)
 
-        # Render editor + Total $ as a separate adjacent table (no scroll-sync)
-        st.markdown('<div class="report-table-wrap">', unsafe_allow_html=True)
-        left_col, right_col = st.columns([6, 1], gap="small")
+    else:
+        # Editor: Units editable (only Edit Week). Dollars computed from the edited units.
+        left_col, right_col = st.columns([1, 1], gap="small")
 
         with left_col:
-            df_editor_main = df_editor.copy()
-            if "Total $ (Units x Price)" in df_editor_main.columns:
-                df_editor_main = df_editor_main.drop(columns=["Total $ (Units x Price)"])
+            df_editor_main = df.copy()
+            keep_cols = ["Vendor", "SKU"] + [w for w in display_weeks if w in df_editor_main.columns]
+            if "Δ Units (Last - Prev)" in df_editor_main.columns:
+                keep_cols += ["Δ Units (Last - Prev)"]
+            df_editor_main = df_editor_main[keep_cols].copy()
 
             edited = st.data_editor(
                 df_editor_main,
                 height=900,
-                use_container_width=False,
+                use_container_width=True,
                 hide_index=True,
                 disabled=disabled_cols,
                 column_config={
-                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks},
                     "Vendor": st.column_config.TextColumn(width="small"),
                     "SKU": st.column_config.TextColumn(width="small"),
+                    **{w: st.column_config.NumberColumn(format="%.0f", width="small") for w in display_weeks if w in df_editor_main.columns},
                     "Δ Units (Last - Prev)": st.column_config.NumberColumn(format="%.0f", width="small"),
-                }
+                },
             )
 
         with right_col:
-            money_only = df[["Total $ (Units x Price)"]].copy() if "Total $ (Units x Price)" in df.columns else pd.DataFrame()
-            # In view mode, money gets formatted; in edit mode we show formatted too so it always looks like money
-            if "Total $ (Units x Price)" in money_only.columns:
-                money_only["Total $ (Units x Price)"] = pd.to_numeric(money_only["Total $ (Units x Price)"], errors="coerce").round(2).apply(fmt_currency_str)
+            dollars = pd.DataFrame({
+                "Vendor": edited.get("Vendor", ""),
+                "SKU": edited.get("SKU", ""),
+            })
+            for w in display_weeks:
+                if w in edited.columns:
+                    u = pd.to_numeric(edited[w], errors="coerce").fillna(0)
+                    dollars[w] = (u * unit_price).round(2)
+
+            if len(display_weeks) >= 2:
+                prev_w, last_w = display_weeks[-2], display_weeks[-1]
+                if prev_w in dollars.columns and last_w in dollars.columns:
+                    dollars["Δ $ (Last - Prev)"] = (
+                        pd.to_numeric(dollars[last_w], errors="coerce").fillna(0)
+                        - pd.to_numeric(dollars[prev_w], errors="coerce").fillna(0)
+                    ).round(2)
+                else:
+                    dollars["Δ $ (Last - Prev)"] = pd.NA
+            else:
+                dollars["Δ $ (Last - Prev)"] = pd.NA
+
+            for c in [w for w in display_weeks if w in dollars.columns] + ["Δ $ (Last - Prev)"]:
+                if c in dollars.columns:
+                    dollars[c] = pd.to_numeric(dollars[c], errors="coerce").round(2).apply(fmt_currency_str)
+
             st.dataframe(
-                money_only,
-                use_container_width=False,
+                dollars,
+                use_container_width=True,
                 height=900,
                 hide_index=True,
-                column_config={"Total $ (Units x Price)": st.column_config.TextColumn(width="small")},
+                column_config={
+                    "Vendor": st.column_config.TextColumn(width="small"),
+                    "SKU": st.column_config.TextColumn(width="small"),
+                    **{w: st.column_config.TextColumn(width="small") for w in display_weeks if w in dollars.columns},
+                    "Δ $ (Last - Prev)": st.column_config.TextColumn(width="small"),
+                },
             )
-        st.markdown('</div>', unsafe_allow_html=True)
 
     c1, c2 = st.columns([1, 3])
+
     with c1:
         if st.button("Save edits", type="primary"):
             start, end, _ = next((a, b, l) for a, b, l in week_meta if l == edit_week)
